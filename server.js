@@ -1,4 +1,4 @@
-// server.js - Optimizado para Render Cloud (Puerto Dinámico y Conexión Estable)
+// server.js - Versión Definitiva con QR Optimizado para Render y Consola
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -6,6 +6,8 @@ const fs = require('fs');
 const path = require('path');
 const { makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
+const qrcodeTerminal = require('qrcode-terminal');
+const qrcode = require('qrcode');
 
 const app = express();
 app.use(cors());
@@ -19,7 +21,7 @@ if (!fs.existsSync(uploadDir)) {
 let pagosBD = [];
 let smsBancoBD = [];
 let sockWhatsApp = null;
-let codigoVinculacionActual = "Generando código, espera unos segundos...";
+let ultimoQrGenerado = "";
 
 async function iniciarWhatsApp() {
     console.log("🔄 Iniciando conexión con WhatsApp en Render...");
@@ -36,37 +38,31 @@ async function iniciarWhatsApp() {
     sockWhatsApp.ev.on('creds.update', saveCreds);
 
     sockWhatsApp.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            ultimoQrGenerado = qr;
+            console.log("\n========================================");
+            console.log("📱 NUEVO CÓDIGO QR GENERADO");
+            console.log("Entra a https://validador-bdv-bot.onrender.com/qr para verlo en grande.");
+            console.log("========================================\n");
+            
+            // Imprime un QR compacto en la consola de Render por si acaso
+            qrcodeTerminal.generate(qr, { small: true });
+        }
 
         if (connection === 'close') {
             const razon = lastDisconnect?.error?.output?.statusCode;
             const debeReconectar = razon !== DisconnectReason.loggedOut;
-            console.log(`⚠️ Conexión cerrada (Razón: ${razon}). Reconectando en 8 segundos...`);
+            console.log(`⚠️ Conexión cerrada (Razón: ${razon}). Reconectando en 5 segundos...`);
             if (debeReconectar) {
-                setTimeout(() => iniciarWhatsApp(), 8000);
+                setTimeout(() => iniciarWhatsApp(), 5000);
             }
         } else if (connection === 'open') {
             console.log('\n✅ ¡WhatsApp vinculado y listo en la nube!\n');
-            codigoVinculacionActual = "¡Vinculado con éxito!";
+            ultimoQrGenerado = "";
         }
     });
-
-    // --- SOLICITUD DE CÓDIGO CON ESPERA ESTABLE ---
-    if (!sockWhatsApp.authState.creds.registered) {
-        setTimeout(async () => {
-            try {
-                const numeroTelefono = "584266550353"; // Tu número configurado
-                console.log(`\n📱 Solicitando código de emparejamiento para el número: ${numeroTelefono}...`);
-                const codigo = await sockWhatsApp.requestPairingCode(numeroTelefono);
-                codigoVinculacionActual = codigo;
-                console.log(`\n========================================`);
-                console.log(`🔑 TU CÓDIGO DE VINCULACIÓN ES: ${codigo}`);
-                console.log(`========================================\n`);
-            } catch (e) {
-                console.log("⚠️ No se pudo generar el código en este intento (se reintentará automáticamente):", e.message);
-            }
-        }, 10000); // Espera 10 segundos a que la red de Render esté completamente estable
-    }
 
     sockWhatsApp.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
@@ -121,20 +117,31 @@ async function iniciarWhatsApp() {
 
 iniciarWhatsApp();
 
-// Ruta web para ver el código en texto grande
-app.get('/qr', (req, res) => {
-    res.send(`
-        <html>
-            <body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding-top:60px;">
-                <h2>Vinculación por Código Numérico</h2>
-                <p>Abre WhatsApp en tu teléfono -> <b>Dispositivos Vinculados</b> -> <b>Vincular un dispositivo</b> -> Toca en <b>"Vincular con el número de teléfono en su lugar"</b></p>
-                <div style="background:#1e293b; display:inline-block; padding:30px; border-radius:15px; margin-top:20px; border: 2px solid #10b981;">
-                    <p style="font-size:14px; color:#94a3b8; margin:0;">Tus 8 dígitos de vinculación:</p>
-                    <h1 style="font-size:48px; color:#34d399; letter-spacing: 5px; margin:10px 0;">${codigoVinculacionActual}</h1>
-                </div>
-            </body>
-        </html>
-    `);
+// Ruta web para ver el Código QR en imagen nítida
+app.get('/qr', async (req, res) => {
+    if (!ultimoQrGenerado) {
+        return res.send(`<html><body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding-top:60px;">
+            <h2>✅ ¡WhatsApp ya está vinculado correctamente!</h2>
+            <p>Puedes cerrar esta ventana y usar tu panel principal.</p>
+        </body></html>`);
+    }
+    try {
+        const urlImagenQr = await qrcode.toDataURL(ultimoQrGenerado);
+        res.send(`
+            <html>
+                <body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding-top:40px;">
+                    <h2>Escanea este Código QR con tu Teléfono</h2>
+                    <p>Abre WhatsApp en tu teléfono -> <b>Dispositivos Vinculados</b> -> <b>Vincular un dispositivo</b></p>
+                    <div style="background:white; display:inline-block; padding:20px; border-radius:15px; margin-top:20px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+                        <img src="${urlImagenQr}" style="width:300px; height:300px;" />
+                    </div>
+                    <p style="margin-top:20px; color:#94a3b8; font-size:12px;">Si el código expira, recarga esta página en 10 segundos.</p>
+                </body>
+            </html>
+        `);
+    } catch (err) {
+        res.status(500).send("Error generando la imagen QR.");
+    }
 });
 
 app.post('/webhook/sms-banco', async (req, res) => {
@@ -164,7 +171,7 @@ app.post('/webhook/sms-banco', async (req, res) => {
             id: Date.now(),
             texto: texto,
             ref: referenciaEncontrada,
-            monto: montoEnonto = montoEncontrado,
+            monto: montoEncontrado,
             hora: new Date().toLocaleTimeString()
         });
 
@@ -193,7 +200,6 @@ app.get('/api/pagos', (req, res) => res.json(pagosBD));
 app.get('/api/sms', (req, res) => res.json(smsBancoBD));
 app.get('/', (req, res) => res.send("Bot BDV Activo en Render"));
 
-// USO OBLIGATORIO DEL PUERTO DINÁMICO DE RENDER
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
