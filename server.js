@@ -1,4 +1,4 @@
-// server.js - Con Emparejamiento Directo por Código de 8 Dígitos (Sin QR)
+// server.js - Optimizado para Render Cloud (Puerto Dinámico y Conexión Estable)
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -19,7 +19,7 @@ if (!fs.existsSync(uploadDir)) {
 let pagosBD = [];
 let smsBancoBD = [];
 let sockWhatsApp = null;
-let codigoVinculacionActual = "Esperando código...";
+let codigoVinculacionActual = "Generando código, espera unos segundos...";
 
 async function iniciarWhatsApp() {
     console.log("🔄 Iniciando conexión con WhatsApp en Render...");
@@ -29,45 +29,44 @@ async function iniciarWhatsApp() {
     sockWhatsApp = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop')
+        browser: Browsers.macOS('Desktop'),
+        printQRInTerminal: false
     });
 
     sockWhatsApp.ev.on('creds.update', saveCreds);
-
-    // --- SOLICITUD AUTOMÁTICA DE CÓDIGO DE EMPAREJAMIENTO ---
-    if (!sockWhatsApp.authState.creds.registered) {
-        setTimeout(async () => {
-            try {
-                // AQUÍ PUEDES PONER TU NÚMERO DE TELÉFONO con código de país (ejemplo para Venezuela: "584121234567")
-                // O dejarlo vacío si prefieres que la consola te lo pida. Pon tu número real entre las comillas:
-                const numeroTelefono = "584266550353"; // <-- CAMBIA ESTO POR TU NÚMERO DE WHATSAPP REAL
-                
-                if (numeroTelefono && numeroTelefono.length > 5) {
-                    console.log(`\n📱 Solicitando código de emparejamiento para el número: ${numeroTelefono}...`);
-                    const codigo = await sockWhatsApp.requestPairingCode(numeroTelefono);
-                    codigoVinculacionActual = codigo;
-                    console.log(`\n========================================`);
-                    console.log(`🔑 TU CÓDIGO DE VINCULACIÓN ES: ${codigo}`);
-                    console.log(`========================================\n`);
-                }
-            } catch (e) {
-                console.log("⚠️ No se pudo generar el código automático todavía, reintentando...", e.message);
-            }
-        }, 6000);
-    }
 
     sockWhatsApp.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
-            const debeReconectar = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log("⚠️ Conexión cerrada. Reconectando...", debeReconectar);
-            if (debeReconectar) setTimeout(() => iniciarWhatsApp(), 5000);
+            const razon = lastDisconnect?.error?.output?.statusCode;
+            const debeReconectar = razon !== DisconnectReason.loggedOut;
+            console.log(`⚠️ Conexión cerrada (Razón: ${razon}). Reconectando en 8 segundos...`);
+            if (debeReconectar) {
+                setTimeout(() => iniciarWhatsApp(), 8000);
+            }
         } else if (connection === 'open') {
             console.log('\n✅ ¡WhatsApp vinculado y listo en la nube!\n');
             codigoVinculacionActual = "¡Vinculado con éxito!";
         }
     });
+
+    // --- SOLICITUD DE CÓDIGO CON ESPERA ESTABLE ---
+    if (!sockWhatsApp.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                const numeroTelefono = "584266550353"; // Tu número configurado
+                console.log(`\n📱 Solicitando código de emparejamiento para el número: ${numeroTelefono}...`);
+                const codigo = await sockWhatsApp.requestPairingCode(numeroTelefono);
+                codigoVinculacionActual = codigo;
+                console.log(`\n========================================`);
+                console.log(`🔑 TU CÓDIGO DE VINCULACIÓN ES: ${codigo}`);
+                console.log(`========================================\n`);
+            } catch (e) {
+                console.log("⚠️ No se pudo generar el código en este intento (se reintentará automáticamente):", e.message);
+            }
+        }, 10000); // Espera 10 segundos a que la red de Render esté completamente estable
+    }
 
     sockWhatsApp.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
@@ -122,7 +121,7 @@ async function iniciarWhatsApp() {
 
 iniciarWhatsApp();
 
-// Ruta web para ver el código en texto grande directamente en la pantalla
+// Ruta web para ver el código en texto grande
 app.get('/qr', (req, res) => {
     res.send(`
         <html>
@@ -165,7 +164,7 @@ app.post('/webhook/sms-banco', async (req, res) => {
             id: Date.now(),
             texto: texto,
             ref: referenciaEncontrada,
-            monto: montoEncontrado,
+            monto: montoEnonto = montoEncontrado,
             hora: new Date().toLocaleTimeString()
         });
 
@@ -194,7 +193,8 @@ app.get('/api/pagos', (req, res) => res.json(pagosBD));
 app.get('/api/sms', (req, res) => res.json(smsBancoBD));
 app.get('/', (req, res) => res.send("Bot BDV Activo en Render"));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Servidor en puerto ${PORT}`);
+// USO OBLIGATORIO DEL PUERTO DINÁMICO DE RENDER
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
 });
