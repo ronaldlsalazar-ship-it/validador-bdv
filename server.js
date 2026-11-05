@@ -1,4 +1,4 @@
-// server.js - Optimizado para Render Cloud
+// server.js - Con Visor Web de Código QR para Render
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const pino = require('pino');
+const qrcode = require('qrcode'); // Usaremos esta librería para generar la imagen QR web
 
 const app = express();
 app.use(cors());
@@ -19,6 +20,7 @@ if (!fs.existsSync(uploadDir)) {
 let pagosBD = [];
 let smsBancoBD = [];
 let sockWhatsApp = null;
+let ultimoQrGenerado = "";
 
 async function iniciarWhatsApp() {
     console.log("🔄 Iniciando conexión con WhatsApp en Render...");
@@ -28,7 +30,7 @@ async function iniciarWhatsApp() {
     sockWhatsApp = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: true
+        printQRInTerminal: false
     });
 
     sockWhatsApp.ev.on('creds.update', saveCreds);
@@ -37,10 +39,8 @@ async function iniciarWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log("\n📱 ESCANEA ESTE CÓDIGO QR CON WHATSAPP:\n");
-            // Render imprime el QR en los logs de texto
-            const qrcodeTerminal = require('qrcode-terminal');
-            qrcodeTerminal.generate(qr, { small: true });
+            ultimoQrGenerado = qr;
+            console.log("\n📱 Nuevo Código QR generado. Entra a https://tu-proyecto.onrender.com/qr para escanearlo.\n");
         }
 
         if (connection === 'close') {
@@ -49,6 +49,7 @@ async function iniciarWhatsApp() {
             if (debeReconectar) setTimeout(() => iniciarWhatsApp(), 5000);
         } else if (connection === 'open') {
             console.log('\n✅ ¡WhatsApp vinculado y listo en la nube!\n');
+            ultimoQrGenerado = ""; // Limpiar QR una vez vinculado
         }
     });
 
@@ -104,6 +105,32 @@ async function iniciarWhatsApp() {
 }
 
 iniciarWhatsApp();
+
+// Ruta web para ver el Código QR gigante y nítido en el navegador
+app.get('/qr', async (req, res) => {
+    if (!ultimoQrGenerado) {
+        return res.send(`<html><body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding-top:50px;">
+            <h2>✅ WhatsApp ya está vinculado o el QR aún se está generando.</h2>
+            <p>Si ya lo escaneaste, recarga tu panel principal.</p>
+        </body></html>`);
+    }
+    try {
+        const urlImagenQr = await qrcode.toDataURL(ultimoQrGenerado);
+        res.send(`
+            <html>
+                <body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding-top:40px;">
+                    <h2>Escanea este código QR con WhatsApp</h2>
+                    <p>Abre WhatsApp en tu teléfono -> Dispositivos Vinculados -> Vincular un dispositivo</p>
+                    <div style="background:white; display:inline-block; padding:15px; border-radius:10px; margin-top:20px;">
+                        <img src="${urlImagenQr}" style="width:300px; height:300px;" />
+                    </div>
+                </body>
+            </html>
+        `);
+    } catch (err) {
+        res.status(500).send("Error generando la imagen del código QR.");
+    }
+});
 
 app.post('/webhook/sms-banco', async (req, res) => {
     try {
