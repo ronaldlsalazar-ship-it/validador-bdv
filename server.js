@@ -1,4 +1,3 @@
-// server.js - Versión con OCR mejorado y Regex de 15 dígitos
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -16,28 +15,21 @@ app.use(bodyParser.json({ limit: '10mb' }));
 app.use(express.static(__dirname));
 
 const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 let pagosBD = [];
 let smsBancoBD = [];
 let sockWhatsApp = null;
 let ultimoQrGenerado = "";
 
-// ============================================
 // FUNCIONES DE EXTRACCIÓN (REGEX MEJORADA A 15 DÍGITOS)
-// ============================================
 function extraerReferencia(texto) {
     if (!texto) return "";
-    
-    // Patrones ampliados para capturar hasta 15 dígitos (BDV usa 8-12 dígitos)
     const patrones = [
         /(?:operaci[oó]n|op|ref|referencia|nro|numero|num|transacci[oó]n|c[oó]digo)[^\d]*(\d{4,15})/i,
         /#(\d{4,15})/,
-        /\b(\d{8,15})\b/  // Fallback: captura cualquier número aislado de 8 a 15 dígitos
+        /\b(\d{8,15})\b/
     ];
-    
     for (const patron of patrones) {
         const match = texto.match(patron);
         if (match) return match[1];
@@ -52,7 +44,6 @@ function extraerMonto(texto) {
         /Bs\.?\s*([\d.,]+)/i,
         /(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}?))/
     ];
-    
     for (const patron of patrones) {
         const match = texto.match(patron);
         if (match) {
@@ -86,11 +77,9 @@ async function procesarImagenOCR(rutaImagen) {
     }
 }
 
-// ============================================
-// WHATSAPP
-// ============================================
 async function iniciarWhatsApp() {
     console.log("🔄 Iniciando conexión con WhatsApp...");
+    // Railway usa /app como directorio raíz, esto funcionará perfectamente con el volumen
     const { state, saveCreds } = await useMultiFileAuthState('sesion_whatsapp');
 
     sockWhatsApp = makeWASocket({
@@ -112,11 +101,9 @@ async function iniciarWhatsApp() {
         }
         if (connection === 'close') {
             const razon = lastDisconnect?.error?.output?.statusCode;
-            if (razon !== DisconnectReason.loggedOut) {
-                setTimeout(() => iniciarWhatsApp(), 5000);
-            }
+            if (razon !== DisconnectReason.loggedOut) setTimeout(() => iniciarWhatsApp(), 5000);
         } else if (connection === 'open') {
-            console.log('\n✅ WhatsApp vinculado\n');
+            console.log('\n✅ WhatsApp vinculado y sesión guardada\n');
             ultimoQrGenerado = "";
         }
     });
@@ -163,9 +150,7 @@ async function iniciarWhatsApp() {
                 const rutaCompleta = path.join(uploadDir, nombreArchivo);
                 fs.writeFileSync(rutaCompleta, buffer);
 
-                await sockWhatsApp.sendMessage(remitente, {
-                    text: `📸 Imagen recibida. Analizando con OCR... (espera 10-20 seg)`
-                });
+                await sockWhatsApp.sendMessage(remitente, { text: `📸 Imagen recibida. Analizando con OCR... (espera 10-20 seg)` });
 
                 const textoOCR = await procesarImagenOCR(rutaCompleta);
                 const ref = extraerReferencia(textoOCR);
@@ -184,9 +169,7 @@ async function iniciarWhatsApp() {
                 });
             } catch (error) {
                 console.error("❌ Error procesando imagen:", error);
-                await sockWhatsApp.sendMessage(remitente, {
-                    text: `❌ Error procesando la imagen. Por favor envía los datos por texto:\nRef: 123456789012\nMonto: 1500.00`
-                });
+                await sockWhatsApp.sendMessage(remitente, { text: `❌ Error procesando la imagen. Envía los datos por texto.` });
             }
         }
     });
@@ -194,39 +177,27 @@ async function iniciarWhatsApp() {
 
 iniciarWhatsApp();
 
-// ============================================
-// RUTAS WEB Y WEBHOOKS
-// ============================================
 app.get('/qr', async (req, res) => {
-    if (!ultimoQrGenerado) {
-        return res.send(`<div style="text-align:center; padding:40px; font-family:Arial;"><h2 style="color:green;">✅ WhatsApp vinculado</h2></div>`);
-    }
+    if (!ultimoQrGenerado) return res.send(`<div style="text-align:center; padding:40px; font-family:Arial;"><h2 style="color:green;">✅ WhatsApp vinculado</h2></div>`);
     try {
         const url = await qrcode.toDataURL(ultimoQrGenerado);
         res.send(`<div style="text-align:center; padding:20px;"><h2>📱 Escanea el QR</h2><img src="${url}" style="max-width:400px;"></div>`);
-    } catch (err) {
-        res.status(500).send("Error generando QR");
-    }
+    } catch (err) { res.status(500).send("Error generando QR"); }
 });
 
 app.post('/webhook/sms-banco', async (req, res) => {
     try {
         const { texto } = req.body;
         console.log(`\n🔔 [SMS BDV]: ${texto}`);
-
         smsBancoBD.unshift({ id: Date.now(), texto: texto, fecha: new Date().toLocaleString() });
 
         const ref = extraerReferencia(texto);
         const monto = extraerMonto(texto);
         console.log(`📊 Extraído → Ref: ${ref} | Monto: ${monto}`);
 
-        if (!ref || monto === 0) {
-            return res.json({ status: "info", message: "No se pudo extraer datos del SMS", refExtraida: ref, montoExtraido: monto });
-        }
+        if (!ref || monto === 0) return res.json({ status: "info", message: "No se pudo extraer datos del SMS", refExtraida: ref, montoExtraido: monto });
 
-        const pagoCoincidente = pagosBD.find(p => 
-            p.estado === "pendiente" && (p.ref === ref || p.ref === "PENDIENTE_" + ref || p.ref === "SIN_REF")
-        );
+        const pagoCoincidente = pagosBD.find(p => p.estado === "pendiente" && (p.ref === ref || p.ref === "PENDIENTE_" + ref || p.ref === "SIN_REF"));
 
         if (pagoCoincidente) {
             pagoCoincidente.estado = "aprobado";
@@ -237,13 +208,10 @@ app.post('/webhook/sms-banco', async (req, res) => {
 
             if (pagoCoincidente.remitenteJid && sockWhatsApp) {
                 try {
-                    await sockWhatsApp.sendMessage(pagoCoincidente.remitenteJid, {
-                        text: `✅ ¡Pago aprobado!\n\nRef: ${ref}\nMonto: Bs. ${monto.toFixed(2)}\n\n¡Gracias! 🎉`
-                    });
+                    await sockWhatsApp.sendMessage(pagoCoincidente.remitenteJid, { text: `✅ ¡Pago aprobado!\n\nRef: ${ref}\nMonto: Bs. ${monto.toFixed(2)}\n\n¡Gracias! 🎉` });
                 } catch (err) { console.error("Error notificando:", err); }
             }
         }
-
         res.json({ status: "success", referencia: ref, monto: monto, cruzado: !!pagoCoincidente });
     } catch (error) {
         console.error("Error webhook SMS:", error);
@@ -256,15 +224,11 @@ app.get('/api/sms', (req, res) => res.json(smsBancoBD));
 
 app.post('/webhook/whatsapp', (req, res) => {
     const { cliente, telefono, referencia, monto, banco } = req.body;
-    pagosBD.unshift({
-        id: Date.now(), cliente: cliente || "Simulado", telefono: telefono || "+584120000000",
-        ref: referencia || "9999", monto: parseFloat(monto) || 0.00, banco: banco || "Banco de Venezuela",
-        estado: "pendiente", fecha: new Date().toLocaleString()
-    });
+    pagosBD.unshift({ id: Date.now(), cliente: cliente || "Simulado", telefono: telefono || "+584120000000", ref: referencia || "9999", monto: parseFloat(monto) || 0.00, banco: banco || "Banco de Venezuela", estado: "pendiente", fecha: new Date().toLocaleString() });
     res.json({ status: "success" });
 });
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor en puerto ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor corriendo en puerto ${PORT}`));
