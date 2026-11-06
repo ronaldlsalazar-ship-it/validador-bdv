@@ -1,4 +1,4 @@
-// server.js - Versión Definitiva con QR Optimizado para Render y Consola
+// server.js - Versión Definitiva con Servidor de Archivos Estáticos (index.html) y QR
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -12,6 +12,9 @@ const qrcode = require('qrcode');
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+
+// Servir archivos estáticos como index.html
+app.use(express.static(__dirname));
 
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -47,7 +50,6 @@ async function iniciarWhatsApp() {
             console.log("Entra a https://validador-bdv-bot.onrender.com/qr para verlo en grande.");
             console.log("========================================\n");
             
-            // Imprime un QR compacto en la consola de Render por si acaso
             qrcodeTerminal.generate(qr, { small: true });
         }
 
@@ -75,7 +77,6 @@ async function iniciarWhatsApp() {
         let mensajeContenido = msg.message;
         if (mensajeContenido.ephemeralMessage) mensajeContenido = mensajeContenido.ephemeralMessage.message;
         if (mensajeContenido.viewOnceMessage) mensajeContenido = mensajeContenido.viewOnceMessage.message;
-        // CORREGIDO: Se cambia 'mensajeContenedor' por 'mensajeContenido' para evitar errores
         if (mensajeContenido.viewOnceMessageV2) mensajeContenido = mensajeContenido.viewOnceMessageV2.message;
 
         const esImagen = mensajeContenido.imageMessage;
@@ -118,7 +119,7 @@ async function iniciarWhatsApp() {
 
 iniciarWhatsApp();
 
-// Ruta web para ver el Código QR en imagen nítida
+// Ruta web para ver el Código QR
 app.get('/qr', async (req, res) => {
     if (!ultimoQrGenerado) {
         return res.send(`<html><body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding-top:60px;">
@@ -199,7 +200,11 @@ app.post('/webhook/sms-banco', async (req, res) => {
 
 app.get('/api/pagos', (req, res) => res.json(pagosBD));
 app.get('/api/sms', (req, res) => res.json(smsBancoBD));
-app.get('/', (req, res) => res.send("Bot BDV Activo en Render"));
+
+// Ruta principal abre la interfaz visual
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
