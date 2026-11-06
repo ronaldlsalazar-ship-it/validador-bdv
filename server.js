@@ -1,4 +1,4 @@
-// server.js - Versión Optimizada para Captura de Eventos en Tiempo Real
+// server.js - Versión con OCR para leer comprobantes
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -8,12 +8,11 @@ const { makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMess
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const qrcode = require('qrcode');
+const { createWorker } = require('tesseract.js');
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
-
-// Servir archivos estáticos como index.html
+app.use(bodyParser.json({ limit: '10mb' }));
 app.use(express.static(__dirname));
 
 const uploadDir = path.join(__dirname, 'uploads');
@@ -26,9 +25,89 @@ let smsBancoBD = [];
 let sockWhatsApp = null;
 let ultimoQrGenerado = "";
 
-async function iniciarWhatsApp() {
-    console.log("🔄 Iniciando conexión con WhatsApp en Render...");
+// ============================================
+// FUNCIONES DE EXTRACCIÓN (REGEX MEJORADOS)
+// ============================================
+function extraerReferencia(texto) {
+    if (!texto) return "";
     
+    // Patrones comunes en comprobantes venezolanos
+    const patrones = [
+        /(?:ref|referencia|nro|numero|num)[.\s:]*#?\s*(\d{4,10})/i,
+        /#(\d{4,10})/,
+        /(?:operaci[oó]n|op)[.\s:]*#?\s*(\d{4,10})/i,
+        /transacci[oó]n[.\s:]*#?\s*(\d{4,10})/i,
+        /c[oó]digo[.\s:]*#?\s*(\d{4,10})/i,
+        /\b(\d{6,10})\b/  // Fallback: cualquier número de 6-10 dígitos
+    ];
+    
+    for (const patron of patrones) {
+        const match = texto.match(patron);
+        if (match) return match[1];
+    }
+    return "";
+}
+
+function extraerMonto(texto) {
+    if (!texto) return 0.00;
+    
+    // Patrones de montos venezolanos
+    const patrones = [
+        /(?:monto|total|importe|bs|bs\.|bol[ií]vares)[.\s:]*([\d.,]+)/i,
+        /Bs\.?\s*([\d.,]+)/i,
+        /(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}?))/
+    ];
+    
+    for (const patron of patrones) {
+        const match = texto.match(patron);
+        if (match) {
+            let montoStr = match[1];
+            // Normalizar: quitar separadores de miles, convertir decimal
+            // Formato venezolano: 1.234,56 → 1234.56
+            if (montoStr.includes(',') && montoStr.includes('.')) {
+                // Tiene ambos: el último es el decimal
+                const ultimoComa = montoStr.lastIndexOf(',');
+                const ultimoPunto = montoStr.lastIndexOf('.');
+                if (ultimoComa > ultimoPunto) {
+                    montoStr = montoStr.replace(/\./g, '').replace(',', '.');
+                } else {
+                    montoStr = montoStr.replace(/,/g, '');
+                }
+            } else if (montoStr.includes(',')) {
+                // Solo coma: puede ser decimal o miles
+                const partes = montoStr.split(',');
+                if (partes[partes.length - 1].length <= 2) {
+                    montoStr = montoStr.replace(',', '.');
+                } else {
+                    montoStr = montoStr.replace(/,/g, '');
+                }
+            }
+            const monto = parseFloat(montoStr);
+            if (!isNaN(monto) && monto > 0) return monto;
+        }
+    }
+    return 0.00;
+}
+
+async function procesarImagenOCR(rutaImagen) {
+    try {
+        console.log("🔍 Iniciando OCR de la imagen...");
+        const worker = await createWorker('spa+eng'); // Español + Inglés
+        const { data: { text } } = await worker.recognize(rutaImagen);
+        await worker.terminate();
+        console.log("📝 Texto extraído por OCR:", text.substring(0, 200));
+        return text;
+    } catch (error) {
+        console.error("❌ Error en OCR:", error);
+        return "";
+    }
+}
+
+// ============================================
+// WHATSAPP
+// ============================================
+async function iniciarWhatsApp() {
+    console.log("🔄 Iniciando conexión con WhatsApp...");
     const { state, saveCreds } = await useMultiFileAuthState('sesion_whatsapp');
 
     sockWhatsApp = makeWASocket({
@@ -43,81 +122,112 @@ async function iniciarWhatsApp() {
 
     sockWhatsApp.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-
         if (qr) {
             ultimoQrGenerado = qr;
-            console.log("\n========================================");
-            console.log("📱 NUEVO CÓDIGO QR GENERADO");
-            console.log("Entra a https://validador-bdv-bot.onrender.com/qr para verlo en grande.");
-            console.log("========================================\n");
-            
+            console.log("\n📱 NUEVO QR GENERADO - Ve a /qr para verlo\n");
             qrcodeTerminal.generate(qr, { small: true });
         }
-
         if (connection === 'close') {
             const razon = lastDisconnect?.error?.output?.statusCode;
-            const debeReconectar = razon !== DisconnectReason.loggedOut;
-            console.log(`⚠️ Conexión cerrada (Razón: ${razon}). Reconectando en 5 segundos...`);
-            if (debeReconectar) {
+            if (razon !== DisconnectReason.loggedOut) {
                 setTimeout(() => iniciarWhatsApp(), 5000);
             }
         } else if (connection === 'open') {
-            console.log('\n✅ ¡WhatsApp vinculado y listo en la nube!\n');
+            console.log('\n✅ WhatsApp vinculado\n');
             ultimoQrGenerado = "";
         }
     });
 
     sockWhatsApp.ev.on('messages.upsert', async (m) => {
-        console.log("📥 [EVENTO WHATSAPP]: Mensaje recibido desde el servidor.");
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
 
         const remitente = msg.key.remoteJid;
-        let nombreCliente = msg.pushName || "Cliente WhatsApp";
+        const nombreCliente = msg.pushName || "Cliente";
         const telefonoLimpio = remitente.split('@')[0].replace(/[^0-9]/g, '');
 
-        let mensajeContenido = msg.message;
-        if (mensajeContenido.ephemeralMessage) mensajeContenido = mensajeContenido.ephemeralMessage.message;
-        if (mensajeContenido.viewOnceMessage) mensajeContenido = mensajeContenido.viewOnceMessage.message;
-        if (mensajeContenido.viewOnceMessageV2) mensajeContenido = mensajeContenido.viewOnceMessageV2.message;
+        let contenido = msg.message;
+        if (contenido.ephemeralMessage) contenido = contenido.ephemeralMessage.message;
+        if (contenido.viewOnceMessage) contenido = contenido.viewOnceMessage.message;
+        if (contenido.viewOnceMessageV2) contenido = contenido.viewOnceMessageV2.message;
 
-        const esImagen = mensajeContenido.imageMessage;
-        const textoPlano = mensajeContenido.conversation || mensajeContenido.extendedTextMessage?.text;
+        const esImagen = contenido.imageMessage;
+        const textoPlano = contenido.conversation || contenido.extendedTextMessage?.text;
 
-        console.log(`💬 De: ${nombreCliente} (${telefonoLimpio}) | ¿Es imagen?: ${!!esImagen} | Texto: ${textoPlano || 'Ninguno'}`);
+        console.log(`💬 De: ${nombreCliente} | Imagen: ${!!esImagen} | Texto: ${textoPlano || 'Ninguno'}`);
 
+        // ============================================
+        // CASO 1: MENSAJE DE TEXTO (comprobante escrito)
+        // ============================================
+        if (textoPlano && !esImagen) {
+            const ref = extraerReferencia(textoPlano);
+            const monto = extraerMonto(textoPlano);
+            
+            pagosBD.unshift({
+                id: Date.now(),
+                cliente: nombreCliente,
+                telefono: `+${telefonoLimpio}`,
+                ref: ref || "SIN_REF",
+                monto: monto,
+                banco: "Por confirmar",
+                estado: monto > 0 && ref ? "validado_parcial" : "pendiente",
+                fecha: new Date().toLocaleString(),
+                remitenteJid: remitente,
+                textoOriginal: textoPlano
+            });
+
+            await sockWhatsApp.sendMessage(remitente, {
+                text: `✅ Comprobante de texto recibido.\n\n📋 Datos extraídos:\n• Referencia: ${ref || 'No detectada'}\n• Monto: Bs. ${monto.toFixed(2)}\n\nPronto validaremos tu pago.`
+            });
+            return;
+        }
+
+        // ============================================
+        // CASO 2: IMAGEN (comprobante escaneado con OCR)
+        // ============================================
         if (esImagen) {
             try {
-                const buffer = await downloadMediaMessage(
-                    msg,
-                    'buffer',
-                    {},
-                    { logger: undefined, reuploadRequest: sockWhatsApp.updateMediaMessage }
-                );
+                const buffer = await downloadMediaMessage(msg, 'buffer', {}, {
+                    logger: undefined,
+                    reuploadRequest: sockWhatsApp.updateMediaMessage
+                });
 
                 const nombreArchivo = `comprobante_${Date.now()}.jpg`;
                 const rutaCompleta = path.join(uploadDir, nombreArchivo);
                 fs.writeFileSync(rutaCompleta, buffer);
 
-                await sockWhatsApp.sendMessage(remitente, { 
-                    text: `¡Hola ${nombreCliente}! 👋 Comprobante recibido. Procesando validación...` 
+                await sockWhatsApp.sendMessage(remitente, {
+                    text: `📸 Imagen recibida. Analizando con OCR... (puede tardar 10-20 seg)`
                 });
+
+                // Procesar OCR
+                const textoOCR = await procesarImagenOCR(rutaCompleta);
+                const ref = extraerReferencia(textoOCR);
+                const monto = extraerMonto(textoOCR);
 
                 pagosBD.unshift({
                     id: Date.now(),
                     cliente: nombreCliente,
                     telefono: `+${telefonoLimpio}`,
-                    ref: "PENDIENTE_" + Date.now().toString().slice(-4),
-                    monto: 0.00,
-                    banco: "Banco de Venezuela",
-                    estado: "pendiente",
-                    fecha: new Date().toLocaleTimeString(),
+                    ref: ref || "SIN_REF",
+                    monto: monto,
+                    banco: "Por confirmar",
+                    estado: monto > 0 && ref ? "validado_parcial" : "pendiente",
+                    fecha: new Date().toLocaleString(),
                     remitenteJid: remitente,
-                    imagen: nombreArchivo
+                    imagen: nombreArchivo,
+                    textoOCR: textoOCR.substring(0, 500)
                 });
-                console.log("✅ Comprobante guardado en la base de datos temporal del bot.");
+
+                await sockWhatsApp.sendMessage(remitente, {
+                    text: `✅ Imagen procesada.\n\n📋 Datos extraídos:\n• Referencia: ${ref || 'No detectada'}\n• Monto: Bs. ${monto.toFixed(2)}\n\nPronto validaremos tu pago.`
+                });
+
             } catch (error) {
-                console.error("❌ Error al descargar imagen:", error);
+                console.error("❌ Error procesando imagen:", error);
+                await sockWhatsApp.sendMessage(remitente, {
+                    text: `❌ Error procesando la imagen. Por favor envía los datos por texto:\n\nFormato:\nRef: 12345678\nMonto: 1500.00`
+                });
             }
         }
     });
@@ -125,127 +235,115 @@ async function iniciarWhatsApp() {
 
 iniciarWhatsApp();
 
-// Ruta web para ver el Código QR
+// ============================================
+// RUTAS WEB
+// ============================================
 app.get('/qr', async (req, res) => {
     if (!ultimoQrGenerado) {
-        return res.send(`
-            <div style="text-align:center; font-family:Arial; padding:40px;">
-                <h2 style="color:green;">✅ ¡WhatsApp ya está vinculado correctamente!</h2>
-                <p>Puedes cerrar esta ventana y usar tu panel principal.</p>
-            </div>
-        `);
+        return res.send(`<div style="text-align:center; padding:40px; font-family:Arial;">
+            <h2 style="color:green;">✅ WhatsApp vinculado</h2>
+        </div>`);
     }
     try {
-        const urlImagenQr = await qrcode.toDataURL(ultimoQrGenerado);
-        res.send(`
-            <div style="text-align:center; font-family:Arial; padding:20px; background:#f0f8ff; min-height:100vh;">
-                <h2>📱 Escanea este Código QR con tu Teléfono</h2>
-                <p>Abre WhatsApp → Dispositivos Vinculados → Vincular un dispositivo</p>
-                <img src="${urlImagenQr}" alt="QR" style="max-width:400px; border:4px solid #0066cc; border-radius:12px; padding:10px; background:white;">
-                <p style="color:#666;">Si el código expira, recarga esta página en 10 segundos.</p>
-            </div>
-        `);
+        const url = await qrcode.toDataURL(ultimoQrGenerado);
+        res.send(`<div style="text-align:center; padding:20px;">
+            <h2>📱 Escanea el QR</h2>
+            <img src="${url}" style="max-width:400px;">
+        </div>`);
     } catch (err) {
-        res.status(500).send("Error generando la imagen QR.");
+        res.status(500).send("Error generando QR");
     }
 });
 
-// Webhook para recibir notificaciones SMS del BDV
+// ============================================
+// WEBHOOK SMS BANCO (MacroDroid envía aquí)
+// ============================================
 app.post('/webhook/sms-banco', async (req, res) => {
     try {
         const { texto } = req.body;
-        console.log(`\n🔔 [Notificación BDV]: ${texto}`);
+        console.log(`\n🔔 [SMS BDV]: ${texto}`);
 
-        // Guardar el SMS recibido
         smsBancoBD.unshift({
             id: Date.now(),
             texto: texto,
             fecha: new Date().toLocaleString()
         });
 
-        let referenciaEncontrada = "";
-        let montoEncontrado = 0.00;
+        const ref = extraerReferencia(texto);
+        const monto = extraerMonto(texto);
 
-        if (texto && texto !== "{notification_text}") {
-            const matchRef = texto.match(/(?:ref|referencia)[^\d]*(\d{4,8})/i) || texto.match(/#(\d{4,8})/);
-            if (matchRef) referenciaEncontrada = matchRef[1];
+        console.log(`📊 Extraído → Ref: ${ref} | Monto: ${monto}`);
 
-            const montosPosibles = texto.match(/\d+[\.,]\d{2}/g);
-            if (montosPosibles && montosPosibles.length > 0) {
-                let montoStr = montosPosibles[montosPosibles.length - 1].replace('.', '').replace(',', '.');
-                montoEncontrado = parseFloat(montoStr) || 0.00;
-            }
+        if (!ref || monto === 0) {
+            return res.json({ 
+                status: "info", 
+                message: "No se pudo extraer referencia o monto del SMS",
+                refExtraida: ref,
+                montoExtraido: monto
+            });
         }
 
-        // Cruce automático: si hay referencia válida y monto, buscar pago pendiente coincidente
-        if (!referenciaEncontrada || referenciaEncontrada === "0000" || montoEncontrado === 0) {
-            return res.json({ status: "info", message: "Datos insuficientes para cruce automático" });
-        }
-
-        // Buscar pago pendiente con la misma referencia
+        // Buscar pago pendiente con esa referencia
         const pagoCoincidente = pagosBD.find(p => 
             p.estado === "pendiente" && 
-            (p.ref === referenciaEncontrada || p.ref === "PENDIENTE_" + referenciaEncontrada)
+            (p.ref === ref || p.ref === "PENDIENTE_" + ref || p.ref === "SIN_REF")
         );
 
         if (pagoCoincidente) {
             pagoCoincidente.estado = "aprobado";
-            pagoCoincidente.monto = montoEncontrado;
+            pagoCoincidente.monto = monto;
+            pagoCoincidente.ref = ref;
             pagoCoincidente.fechaAprobacion = new Date().toLocaleString();
-            console.log(`✅ CRUCE EXITOSO: Pago ${pagoCoincidente.id} aprobado por Bs. ${montoEncontrado}`);
+            console.log(`✅ CRUCE EXITOSO: Pago ${pagoCoincidente.id} aprobado`);
 
-            // Notificar al cliente por WhatsApp
             if (pagoCoincidente.remitenteJid && sockWhatsApp) {
                 try {
                     await sockWhatsApp.sendMessage(pagoCoincidente.remitenteJid, {
-                        text: `✅ ¡Pago aprobado!\n\nReferencia: ${referenciaEncontrada}\nMonto: Bs. ${montoEncontrado.toFixed(2)}\n\n¡Gracias por tu compra! 🎉`
+                        text: `✅ ¡Pago aprobado!\n\nRef: ${ref}\nMonto: Bs. ${monto.toFixed(2)}\n\n¡Gracias! 🎉`
                     });
                 } catch (err) {
-                    console.error("Error enviando notificación:", err);
+                    console.error("Error notificando:", err);
                 }
             }
         }
 
-        res.json({ 
-            status: "success", 
-            referencia: referenciaEncontrada, 
-            monto: montoEncontrado,
+        res.json({
+            status: "success",
+            referencia: ref,
+            monto: monto,
             cruzado: !!pagoCoincidente
         });
     } catch (error) {
-        console.error("Error en webhook SMS:", error);
+        console.error("Error webhook SMS:", error);
         res.status(500).json({ status: "error", message: error.message });
     }
 });
 
-// API para obtener pagos
+// APIs
 app.get('/api/pagos', (req, res) => res.json(pagosBD));
-
-// API para obtener SMS del banco
 app.get('/api/sms', (req, res) => res.json(smsBancoBD));
 
-// Ruta de simulación manual desde el index
+// Simulación manual
 app.post('/webhook/whatsapp', (req, res) => {
     const { cliente, telefono, referencia, monto, banco } = req.body;
     pagosBD.unshift({
         id: Date.now(),
-        cliente: cliente || "Cliente Simulado",
+        cliente: cliente || "Simulado",
         telefono: telefono || "+584120000000",
         ref: referencia || "9999",
         monto: parseFloat(monto) || 0.00,
         banco: banco || "Banco de Venezuela",
         estado: "pendiente",
-        fecha: new Date().toLocaleTimeString()
+        fecha: new Date().toLocaleString()
     });
     res.json({ status: "success" });
 });
 
-// Ruta principal abre la interfaz visual
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+    console.log(`🚀 Servidor en puerto ${PORT}`);
 });

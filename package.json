@@ -1,7 +1,7 @@
 {
   "name": "validador-bdv-bot",
-  "version": "1.0.0",
-  "description": "Bot validador BDV y WhatsApp",
+  "version": "1.1.0",
+  "description": "Bot validador BDV con OCR y WhatsApp",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -13,6 +13,7 @@
     "express": "^4.19.2",
     "pino": "^9.0.0",
     "qrcode": "^1.5.3",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "tesseract.js": "^5.0.5"
   }
 }
