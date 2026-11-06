@@ -75,7 +75,8 @@ async function iniciarWhatsApp() {
         let mensajeContenido = msg.message;
         if (mensajeContenido.ephemeralMessage) mensajeContenido = mensajeContenido.ephemeralMessage.message;
         if (mensajeContenido.viewOnceMessage) mensajeContenido = mensajeContenido.viewOnceMessage.message;
-        if (mensajeContenido.viewOnceMessageV2) mensajeContenido = mensajeContenedor.viewOnceMessageV2.message;
+        // CORREGIDO: Se cambia 'mensajeContenedor' por 'mensajeContenido' para evitar errores
+        if (mensajeContenido.viewOnceMessageV2) mensajeContenido = mensajeContenido.viewOnceMessageV2.message;
 
         const esImagen = mensajeContenido.imageMessage;
 
