@@ -1,4 +1,4 @@
-// server.js - Versión Definitiva con Servidor de Archivos Estáticos (index.html) y QR
+// server.js - Versión Definitiva con Limpieza Automática de Sesión y QR
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -19,6 +19,17 @@ app.use(express.static(__dirname));
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Limpiar sesión vieja automáticamente al arrancar para evitar bloqueos por planes gratuitos
+const sessionDir = path.join(__dirname, 'sesion_whatsapp');
+if (fs.existsSync(sessionDir)) {
+    try {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        console.log("🧹 Sesión anterior eliminada automáticamente para generar un QR limpio.");
+    } catch (e) {
+        console.log("No se pudo borrar la sesión anterior, continuando...");
+    }
 }
 
 let pagosBD = [];
