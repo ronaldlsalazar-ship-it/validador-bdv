@@ -1,4 +1,4 @@
-// server.js - Versión Definitiva con Limpieza Automática de Sesión y QR
+// server.js - Versión Optimizada para Captura de Eventos en Tiempo Real
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -21,17 +21,6 @@ if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Limpiar sesión vieja automáticamente al arrancar para evitar bloqueos por planes gratuitos
-const sessionDir = path.join(__dirname, 'sesion_whatsapp');
-if (fs.existsSync(sessionDir)) {
-    try {
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-        console.log("🧹 Sesión anterior eliminada automáticamente para generar un QR limpio.");
-    } catch (e) {
-        console.log("No se pudo borrar la sesión anterior, continuando...");
-    }
-}
-
 let pagosBD = [];
 let smsBancoBD = [];
 let sockWhatsApp = null;
@@ -46,7 +35,8 @@ async function iniciarWhatsApp() {
         auth: state,
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Desktop'),
-        printQRInTerminal: false
+        printQRInTerminal: false,
+        markOnlineOnConnect: true
     });
 
     sockWhatsApp.ev.on('creds.update', saveCreds);
@@ -78,6 +68,7 @@ async function iniciarWhatsApp() {
     });
 
     sockWhatsApp.ev.on('messages.upsert', async (m) => {
+        console.log("📥 [EVENTO WHATSAPP]: Mensaje recibido desde el servidor.");
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
 
@@ -91,6 +82,9 @@ async function iniciarWhatsApp() {
         if (mensajeContenido.viewOnceMessageV2) mensajeContenido = mensajeContenido.viewOnceMessageV2.message;
 
         const esImagen = mensajeContenido.imageMessage;
+        const textoPlano = mensajeContenido.conversation || mensajeContenido.extendedTextMessage?.text;
+
+        console.log(`💬 De: ${nombreCliente} (${telefonoLimpio}) | ¿Es imagen?: ${!!esImagen} | Texto: ${textoPlano || 'Ninguno'}`);
 
         if (esImagen) {
             try {
@@ -121,6 +115,7 @@ async function iniciarWhatsApp() {
                     remitenteJid: remitente,
                     imagen: nombreArchivo
                 });
+                console.log("✅ Comprobante guardado en la base de datos temporal del bot.");
             } catch (error) {
                 console.error("❌ Error al descargar imagen:", error);
             }
@@ -211,6 +206,22 @@ app.post('/webhook/sms-banco', async (req, res) => {
 
 app.get('/api/pagos', (req, res) => res.json(pagosBD));
 app.get('/api/sms', (req, res) => res.json(smsBancoBD));
+
+// Ruta de simulación manual desde el index
+app.post('/webhook/whatsapp', (req, res) => {
+    const { cliente, telefono, referencia, monto, banco } = req.body;
+    pagosBD.unshift({
+        id: Date.now(),
+        cliente: cliente || "Cliente Simulado",
+        telefono: telefono || "+584120000000",
+        ref: referencia || "9999",
+        monto: parseFloat(monto) || 0.00,
+        banco: banco || "Banco de Venezuela",
+        estado: "pendiente",
+        fecha: new Date().toLocaleTimeString()
+    });
+    res.json({ status: "success" });
+});
 
 // Ruta principal abre la interfaz visual
 app.get('/', (req, res) => {
