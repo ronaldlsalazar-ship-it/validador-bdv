@@ -128,34 +128,40 @@ iniciarWhatsApp();
 // Ruta web para ver el Código QR
 app.get('/qr', async (req, res) => {
     if (!ultimoQrGenerado) {
-        return res.send(`<html><body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding-top:60px;">
-            <h2>✅ ¡WhatsApp ya está vinculado correctamente!</h2>
-            <p>Puedes cerrar esta ventana y usar tu panel principal.</p>
-        </body></html>`);
+        return res.send(`
+            <div style="text-align:center; font-family:Arial; padding:40px;">
+                <h2 style="color:green;">✅ ¡WhatsApp ya está vinculado correctamente!</h2>
+                <p>Puedes cerrar esta ventana y usar tu panel principal.</p>
+            </div>
+        `);
     }
     try {
         const urlImagenQr = await qrcode.toDataURL(ultimoQrGenerado);
         res.send(`
-            <html>
-                <body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding-top:40px;">
-                    <h2>Escanea este Código QR con tu Teléfono</h2>
-                    <p>Abre WhatsApp en tu teléfono -> <b>Dispositivos Vinculados</b> -> <b>Vincular un dispositivo</b></p>
-                    <div style="background:white; display:inline-block; padding:20px; border-radius:15px; margin-top:20px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
-                        <img src="${urlImagenQr}" style="width:300px; height:300px;" />
-                    </div>
-                    <p style="margin-top:20px; color:#94a3b8; font-size:12px;">Si el código expira, recarga esta página en 10 segundos.</p>
-                </body>
-            </html>
+            <div style="text-align:center; font-family:Arial; padding:20px; background:#f0f8ff; min-height:100vh;">
+                <h2>📱 Escanea este Código QR con tu Teléfono</h2>
+                <p>Abre WhatsApp → Dispositivos Vinculados → Vincular un dispositivo</p>
+                <img src="${urlImagenQr}" alt="QR" style="max-width:400px; border:4px solid #0066cc; border-radius:12px; padding:10px; background:white;">
+                <p style="color:#666;">Si el código expira, recarga esta página en 10 segundos.</p>
+            </div>
         `);
     } catch (err) {
         res.status(500).send("Error generando la imagen QR.");
     }
 });
 
+// Webhook para recibir notificaciones SMS del BDV
 app.post('/webhook/sms-banco', async (req, res) => {
     try {
         const { texto } = req.body;
         console.log(`\n🔔 [Notificación BDV]: ${texto}`);
+
+        // Guardar el SMS recibido
+        smsBancoBD.unshift({
+            id: Date.now(),
+            texto: texto,
+            fecha: new Date().toLocaleString()
+        });
 
         let referenciaEncontrada = "";
         let montoEncontrado = 0.00;
@@ -171,40 +177,51 @@ app.post('/webhook/sms-banco', async (req, res) => {
             }
         }
 
-        if (!referenciaEncontrada || referenciaEncontrada === "0000" || montoEncontrado <= 0) {
-            return res.status(400).json({ status: "error", message: "Datos incompletos" });
+        // Cruce automático: si hay referencia válida y monto, buscar pago pendiente coincidente
+        if (!referenciaEncontrada || referenciaEncontrada === "0000" || montoEncontrado === 0) {
+            return res.json({ status: "info", message: "Datos insuficientes para cruce automático" });
         }
 
-        smsBancoBD.unshift({
-            id: Date.now(),
-            texto: texto,
-            ref: referenciaEncontrada,
-            monto: montoEncontrado,
-            hora: new Date().toLocaleTimeString()
-        });
+        // Buscar pago pendiente con la misma referencia
+        const pagoCoincidente = pagosBD.find(p => 
+            p.estado === "pendiente" && 
+            (p.ref === referenciaEncontrada || p.ref === "PENDIENTE_" + referenciaEncontrada)
+        );
 
-        for (let p of pagosBD) {
-            if (p.estado === 'pendiente') {
-                p.estado = 'aprobado';
-                p.ref = referenciaEncontrada;
-                p.monto = montoEncontrado;
+        if (pagoCoincidente) {
+            pagoCoincidente.estado = "aprobado";
+            pagoCoincidente.monto = montoEncontrado;
+            pagoCoincidente.fechaAprobacion = new Date().toLocaleString();
+            console.log(`✅ CRUCE EXITOSO: Pago ${pagoCoincidente.id} aprobado por Bs. ${montoEncontrado}`);
 
-                if (sockWhatsApp && p.remitenteJid) {
-                    await sockWhatsApp.sendMessage(p.remitenteJid, {
-                        text: `✅ ¡Pago Confirmado! Bs. ${montoEncontrado.toFixed(2)} (Ref: #${referenciaEncontrada}). ¡Gracias!`
+            // Notificar al cliente por WhatsApp
+            if (pagoCoincidente.remitenteJid && sockWhatsApp) {
+                try {
+                    await sockWhatsApp.sendMessage(pagoCoincidente.remitenteJid, {
+                        text: `✅ ¡Pago aprobado!\n\nReferencia: ${referenciaEncontrada}\nMonto: Bs. ${montoEncontrado.toFixed(2)}\n\n¡Gracias por tu compra! 🎉`
                     });
+                } catch (err) {
+                    console.error("Error enviando notificación:", err);
                 }
-                break;
             }
         }
 
-        res.status(200).json({ status: "success", ref: referenciaEncontrada, monto: montoEncontrado });
+        res.json({ 
+            status: "success", 
+            referencia: referenciaEncontrada, 
+            monto: montoEncontrado,
+            cruzado: !!pagoCoincidente
+        });
     } catch (error) {
+        console.error("Error en webhook SMS:", error);
         res.status(500).json({ status: "error", message: error.message });
     }
 });
 
+// API para obtener pagos
 app.get('/api/pagos', (req, res) => res.json(pagosBD));
+
+// API para obtener SMS del banco
 app.get('/api/sms', (req, res) => res.json(smsBancoBD));
 
 // Ruta de simulación manual desde el index

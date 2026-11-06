@@ -4,357 +4,297 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Validador de Pagos WhatsApp - Banco de Venezuela</title>
-    <!-- Tailwind CSS y FontAwesome -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-</head>
-<body class="bg-slate-900 text-slate-100 font-sans antialiased min-h-screen flex flex-col">
-
-    <!-- Header / Barra Superior -->
-    <header class="bg-slate-800 border-b border-slate-700 px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
-        <div class="flex items-center space-x-3">
-            <div class="bg-emerald-600 text-white p-3 rounded-xl shadow-lg flex items-center justify-center">
-                <i class="fa-brands fa-whatsapp text-2xl"></i>
-            </div>
-            <div>
-                <h1 class="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-                    Validador BDV Bot <span class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30 font-medium">Activo</span>
-                </h1>
-                <p class="text-xs text-slate-400">Automatización de pagos móviles y transferencias WhatsApp</p>
-            </div>
-        </div>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        body { background: linear-gradient(135deg, #0a2540 0%, #1e3a5f 100%); color: #fff; min-height: 100vh; padding: 20px; }
         
-        <!-- Tasa BCV Oficial modificable -->
-        <div class="flex items-center gap-3">
-            <div class="bg-slate-700/60 border border-slate-600/50 px-3 py-1.5 rounded-lg text-xs flex items-center gap-2">
-                <i class="fa-solid fa-chart-line text-emerald-400"></i>
-                <span>Tasa BCV Ref: <input type="number" id="tasa-bcv" value="130.00" step="0.01" onchange="actualizarTasaBCV()" class="w-20 bg-slate-900 border border-slate-600 rounded px-1 text-white font-bold text-center focus:outline-none focus:border-emerald-500"> Bs/$</span>
-            </div>
-            <button onclick="abrirModalSimulador()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-lg shadow transition flex items-center gap-2">
-                <i class="fa-solid fa-plus"></i> Simular Pago Entrante
-            </button>
-        </div>
-    </header>
+        .header { text-align: center; padding: 20px; background: rgba(255,255,255,0.05); border-radius: 16px; margin-bottom: 20px; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .header h1 { font-size: 28px; margin-bottom: 8px; color: #fff; }
+        .header .status { display: inline-block; padding: 6px 16px; background: #00c853; border-radius: 20px; font-size: 13px; font-weight: 600; margin-top: 8px; }
+        .header .status::before { content: "●"; margin-right: 6px; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .header p { color: #b0c4de; margin-top: 10px; font-size: 14px; }
+        
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        .stat-card { background: rgba(255,255,255,0.08); padding: 20px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.1); transition: transform 0.2s; }
+        .stat-card:hover { transform: translateY(-3px); }
+        .stat-card .label { font-size: 13px; color: #b0c4de; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-card .value { font-size: 28px; font-weight: 700; color: #fff; }
+        .stat-card .sub { font-size: 12px; color: #8aa5c2; margin-top: 6px; }
+        .stat-card.ventas { border-left: 4px solid #00c853; }
+        .stat-card.usd { border-left: 4px solid #ffd700; }
+        .stat-card.pendientes { border-left: 4px solid #ff9800; }
+        .stat-card.aprobados { border-left: 4px solid #2196f3; }
+        
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+        .controls input, .controls button { padding: 10px 16px; border-radius: 8px; border: none; font-size: 14px; }
+        .controls input { background: rgba(255,255,255,0.1); color: #fff; border: 1px solid rgba(255,255,255,0.2); flex: 1; min-width: 150px; }
+        .controls input::placeholder { color: #8aa5c2; }
+        .btn-primary { background: linear-gradient(135deg, #0066cc, #0099ff); color: #fff; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,153,255,0.4); }
+        .btn-success { background: linear-gradient(135deg, #00a844, #00c853); color: #fff; cursor: pointer; font-weight: 600; }
+        .btn-warning { background: linear-gradient(135deg, #ff6f00, #ff9800); color: #fff; cursor: pointer; font-weight: 600; }
+        
+        .section { background: rgba(255,255,255,0.05); border-radius: 14px; padding: 20px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.1); }
+        .section h2 { font-size: 18px; margin-bottom: 6px; color: #fff; }
+        .section .subtitle { color: #8aa5c2; font-size: 13px; margin-bottom: 16px; }
+        
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; padding: 12px; background: rgba(0,0,0,0.2); color: #b0c4de; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+        td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 14px; }
+        tr:hover { background: rgba(255,255,255,0.03); }
+        
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+        .badge-pendiente { background: rgba(255,152,0,0.2); color: #ffb74d; }
+        .badge-aprobado { background: rgba(0,200,83,0.2); color: #69f0ae; }
+        .badge-rechazado { background: rgba(244,67,54,0.2); color: #ff8a80; }
+        
+        .sms-item { background: rgba(0,0,0,0.2); padding: 12px 16px; border-radius: 10px; margin-bottom: 8px; border-left: 3px solid #2196f3; }
+        .sms-item .fecha { font-size: 11px; color: #8aa5c2; margin-top: 4px; }
+        
+        .gateway-badge { display: inline-block; padding: 4px 12px; background: rgba(0,200,83,0.2); color: #69f0ae; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        
+        .empty-state { text-align: center; padding: 40px 20px; color: #8aa5c2; }
+        .empty-state .icon { font-size: 48px; margin-bottom: 10px; opacity: 0.5; }
+        
+        /* Modal */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center; backdrop-filter: blur(4px); }
+        .modal-overlay.active { display: flex; }
+        .modal { background: #1e3a5f; padding: 28px; border-radius: 16px; width: 90%; max-width: 480px; border: 1px solid rgba(255,255,255,0.1); }
+        .modal h3 { margin-bottom: 20px; color: #fff; }
+        .modal label { display: block; margin-bottom: 6px; color: #b0c4de; font-size: 13px; }
+        .modal input { width: 100%; padding: 10px 12px; margin-bottom: 14px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; color: #fff; font-size: 14px; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
+        .btn-cancel { background: rgba(255,255,255,0.1); color: #fff; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; }
+        
+        .footer { text-align: center; padding: 20px; color: #8aa5c2; font-size: 12px; margin-top: 20px; }
+        
+        @media (max-width: 600px) {
+            .header h1 { font-size: 22px; }
+            .stat-card .value { font-size: 22px; }
+            table { font-size: 12px; }
+            th, td { padding: 8px; }
+        }
+    </style>
+</head>
+<body>
 
-    <!-- Contenido Principal -->
-    <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
+<div class="header">
+    <h1>🏦 Validador de Pagos WhatsApp</h1>
+    <div class="status">Validador BDV Bot Activo</div>
+    <p>Automatización de pagos móviles y transferencias WhatsApp</p>
+</div>
 
-        <!-- Métricas KPI Financieras -->
-        <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-5 shadow-sm">
-                <div class="flex justify-between items-start">
-                    <div>
-                        <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Ventas Hoy (Bs.)</p>
-                        <h3 id="kpi-total-bs" class="text-2xl font-bold text-white mt-1">Bs. 0.00</h3>
-                    </div>
-                    <div class="p-2.5 bg-blue-500/10 text-blue-400 rounded-xl border border-blue-500/20">
-                        <i class="fa-solid fa-bolt text-lg"></i>
-                    </div>
-                </div>
-                <div class="mt-3 flex items-center text-xs text-emerald-400 gap-1 font-medium">
-                    <i class="fa-solid fa-arrow-trend-up"></i>
-                    <span>Sincronizado en tiempo real</span>
-                </div>
-            </div>
-
-            <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-5 shadow-sm">
-                <div class="flex justify-between items-start">
-                    <div>
-                        <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Equivalente USD</p>
-                        <h3 id="kpi-total-usd" class="text-2xl font-bold text-white mt-1">$0.00</h3>
-                    </div>
-                    <div class="p-2.5 bg-emerald-500/10 text-emerald-400 rounded-xl border border-emerald-500/20">
-                        <i class="fa-solid fa-dollar-sign text-lg"></i>
-                    </div>
-                </div>
-                <div class="mt-3 flex items-center text-xs text-slate-400 gap-1">
-                    <span id="label-tasa-base">Calculado según Tasa BCV</span>
-                </div>
-            </div>
-
-            <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-5 shadow-sm">
-                <div class="flex justify-between items-start">
-                    <div>
-                        <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Pendientes de Validación</p>
-                        <h3 id="kpi-pendientes" class="text-2xl font-bold text-amber-400 mt-1">0</h3>
-                    </div>
-                    <div class="p-2.5 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20">
-                        <i class="fa-solid fa-clock text-lg"></i>
-                    </div>
-                </div>
-                <div class="mt-3 flex items-center text-xs text-amber-400 gap-1 font-medium">
-                    <i class="fa-solid fa-triangle-exclamation"></i>
-                    <span>Requieren verificación</span>
-                </div>
-            </div>
-
-            <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-5 shadow-sm">
-                <div class="flex justify-between items-start">
-                    <div>
-                        <p class="text-xs font-medium text-slate-400 uppercase tracking-wider">Aprobados Automáticos</p>
-                        <h3 id="kpi-aprobados" class="text-2xl font-bold text-emerald-400 mt-1">0</h3>
-                    </div>
-                    <div class="p-2.5 bg-emerald-500/10 text-emerald-400 rounded-xl border border-emerald-500/20">
-                        <i class="fa-solid fa-circle-check text-lg"></i>
-                    </div>
-                </div>
-                <div class="mt-3 flex items-center text-xs text-emerald-400 gap-1 font-medium">
-                    <i class="fa-solid fa-check"></i>
-                    <span>Cruce SMS exitoso</span>
-                </div>
-            </div>
-        </section>
-
-        <!-- Sección Principal: Tabla de Pagos & SMS -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            <div class="lg:col-span-2 bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-sm flex flex-col">
-                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-                    <div>
-                        <h2 class="text-lg font-bold text-white flex items-center gap-2">
-                            <i class="fa-solid fa-receipt text-emerald-400"></i> Capturas y Pagos de WhatsApp
-                        </h2>
-                        <p class="text-xs text-slate-400">Comprobantes enviados por los clientes al bot.</p>
-                    </div>
-                    <div class="flex items-center gap-2 w-full sm:w-auto">
-                        <div class="relative w-full sm:w-64">
-                            <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
-                                <i class="fa-solid fa-search text-xs"></i>
-                            </span>
-                            <input type="text" id="busqueda-pagos" onkeyup="filtrarPagos()" placeholder="Buscar por ref, teléfono..." class="w-full bg-slate-900 border border-slate-700 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
-                        </div>
-                    </div>
-                </div>
-
-                <div class="overflow-x-auto flex-1">
-                    <table class="w-full text-left border-collapse">
-                        <thead>
-                            <tr class="border-b border-slate-700 text-xs text-slate-400 uppercase tracking-wider">
-                                <th class="py-3 px-4 font-semibold">Cliente / Teléfono</th>
-                                <th class="py-3 px-4 font-semibold">Referencia</th>
-                                <th class="py-3 px-4 font-semibold">Monto</th>
-                                <th class="py-3 px-4 font-semibold">Banco Emisor</th>
-                                <th class="py-3 px-4 font-semibold">Estado</th>
-                                <th class="py-3 px-4 font-semibold text-right">Acciones</th>
-                            </tr>
-                        </thead>
-                        <tbody id="tabla-pagos-body" class="divide-y divide-slate-700/50 text-xs">
-                            <!-- Filas inyectadas por JS -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-6 shadow-sm flex flex-col">
-                <div class="flex justify-between items-center mb-4">
-                    <div>
-                        <h2 class="text-lg font-bold text-white flex items-center gap-2">
-                            <i class="fa-solid fa-comment-sms text-blue-400"></i> SMS Recibidos (BDV)
-                        </h2>
-                        <p class="text-xs text-slate-400">Notificaciones oficiales detectadas.</p>
-                    </div>
-                    <span class="bg-blue-500/10 text-blue-400 px-2.5 py-1 rounded-full text-xs font-semibold border border-blue-500/20">
-                        Gateway Activo
-                    </span>
-                </div>
-
-                <div id="lista-sms" class="space-y-3 overflow-y-auto max-h-[420px] pr-1 flex-1">
-                    <!-- SMS inyectados por JS -->
-                </div>
-
-                <div class="mt-4 pt-4 border-t border-slate-700/80 flex justify-between items-center">
-                    <button onclick="cargarDatosServidor()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-lg text-xs transition shadow flex items-center justify-center gap-2">
-                        <i class="fa-solid fa-rotate"></i> Actualizar Datos desde el Servidor
-                    </button>
-                </div>
-            </div>
-
-        </div>
-
-    </main>
-
-    <!-- Modal de Simulación -->
-    <div id="modal-simulador" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden p-4">
-        <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-base font-bold text-white flex items-center gap-2">
-                    <i class="fa-brands fa-whatsapp text-emerald-400"></i> Simular Comprobante WhatsApp
-                </h3>
-                <button onclick="cerrarModalSimulador()" class="text-slate-400 hover:text-white">
-                    <i class="fa-solid fa-xmark text-lg"></i>
-                </button>
-            </div>
-            
-            <form id="form-simulador" onsubmit="guardarPagoSimulado(event)" class="space-y-4 text-xs">
-                <div>
-                    <label class="block text-slate-400 font-medium mb-1">Nombre del Cliente</label>
-                    <input type="text" id="sim-nombre" required placeholder="Ej. Carlos Pérez" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-emerald-500">
-                </div>
-                <div>
-                    <label class="block text-slate-400 font-medium mb-1">Teléfono WhatsApp</label>
-                    <input type="text" id="sim-telefono" required placeholder="+58 412-1234567" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-emerald-500">
-                </div>
-                <div class="grid grid-cols-2 gap-3">
-                    <div>
-                        <label class="block text-slate-400 font-medium mb-1">Referencia</label>
-                        <input type="text" id="sim-ref" required placeholder="4589" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-emerald-500">
-                    </div>
-                    <div>
-                        <label class="block text-slate-400 font-medium mb-1">Monto (Bs.)</label>
-                        <input type="number" step="0.01" id="sim-monto" required placeholder="150.00" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-200 focus:outline-none focus:border-emerald-500">
-                    </div>
-                </div>
-                <div class="pt-2 flex justify-end gap-2">
-                    <button type="button" onclick="cerrarModalSimulador()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 px-4 py-2 rounded-lg font-medium">Cancelar</button>
-                    <button type="submit" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg font-semibold shadow">Registrar</button>
-                </div>
-            </form>
+<div class="stats-grid">
+    <div class="stat-card ventas">
+        <div class="label">💰 Ventas Hoy (Bs.)</div>
+        <div class="value" id="ventasBs">Bs. 0.00</div>
+        <div class="sub">Sincronizado en tiempo real</div>
+    </div>
+    <div class="stat-card usd">
+        <div class="label">💵 Equivalente USD</div>
+        <div class="value" id="ventasUsd">$0.00</div>
+        <div class="sub">
+            Tasa BCV Ref: 
+            <input type="number" id="tasaBcv" value="36.50" step="0.01" style="width:80px; background:transparent; color:#ffd700; border:none; border-bottom:1px dashed #ffd700; text-align:center;">
+            Bs/$
         </div>
     </div>
+    <div class="stat-card pendientes">
+        <div class="label">⏳ Pendientes de Validación</div>
+        <div class="value" id="pendientes">0</div>
+        <div class="sub">Requieren verificación</div>
+    </div>
+    <div class="stat-card aprobados">
+        <div class="label">✅ Aprobados Automáticos</div>
+        <div class="value" id="aprobados">0</div>
+        <div class="sub">Cruce SMS exitoso</div>
+    </div>
+</div>
 
-    <!-- Footer -->
-    <footer class="bg-slate-800 border-t border-slate-700 py-4 text-center text-xs text-slate-400">
-        Validador Automático de Pagos Móviles &bull; Banco de Venezuela & WhatsApp Integration &copy; 2026
-    </footer>
+<div class="controls">
+    <input type="text" id="buscarPago" placeholder="🔍 Buscar por cliente, referencia o teléfono...">
+    <button class="btn-success" onclick="actualizarDatos()">🔄 Actualizar Datos</button>
+    <button class="btn-warning" onclick="abrirModal()">➕ Simular Pago Entrante</button>
+</div>
 
-    <script>
-        // URL base dinámica: si se abre en Render usa la ruta relativa, si se prueba local detecta el puerto 3000
-        const API_BASE = window.location.hostname.includes('onrender.com') ? '' : 'http://localhost:3000';
+<div class="section">
+    <h2>📸 Capturas y Pagos de WhatsApp</h2>
+    <div class="subtitle">Comprobantes enviados por los clientes al bot.</div>
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>Cliente / Teléfono</th>
+                    <th>Referencia</th>
+                    <th>Monto</th>
+                    <th>Banco Emisor</th>
+                    <th>Estado</th>
+                    <th>Acciones</th>
+                </tr>
+            </thead>
+            <tbody id="tablaPagos">
+                <tr><td colspan="6" class="empty-state"><div class="icon">📭</div>No hay pagos registrados aún</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
 
-        let pagos = [];
-        let smsBanco = [];
-        let tasaBcvActual = 130.00;
+<div class="section">
+    <h2>📱 SMS Recibidos (BDV)</h2>
+    <div class="subtitle">Notificaciones oficiales detectadas. <span class="gateway-badge">● Gateway Activo</span></div>
+    <div id="listaSms">
+        <div class="empty-state"><div class="icon">📨</div>No hay SMS del banco aún</div>
+    </div>
+</div>
 
-        document.addEventListener("DOMContentLoaded", () => {
-            cargarDatosServidor();
-            setInterval(cargarDatosServidor, 3000);
-        });
+<!-- Modal Simular Pago -->
+<div class="modal-overlay" id="modalPago">
+    <div class="modal">
+        <h3>📲 Simular Comprobante WhatsApp</h3>
+        <label>Nombre del Cliente</label>
+        <input type="text" id="inpCliente" placeholder="Ej: Juan Pérez">
+        <label>Teléfono WhatsApp</label>
+        <input type="text" id="inpTelefono" placeholder="Ej: +584141234567">
+        <label>Referencia</label>
+        <input type="text" id="inpReferencia" placeholder="Ej: 12345678">
+        <label>Monto (Bs.)</label>
+        <input type="number" id="inpMonto" placeholder="Ej: 1500.00" step="0.01">
+        <div class="modal-actions">
+            <button class="btn-cancel" onclick="cerrarModal()">Cancelar</button>
+            <button class="btn-primary" onclick="registrarPago()">Registrar</button>
+        </div>
+    </div>
+</div>
 
-        async function cargarDatosServidor() {
-            try {
-                const resPagos = await fetch(`${API_BASE}/api/pagos`);
-                pagos = await resPagos.json();
-                const resSms = await fetch(`${API_BASE}/api/sms`);
-                smsBanco = await resSms.json();
+<div class="footer">
+    Validador Automático de Pagos Móviles • Banco de Venezuela & WhatsApp Integration © 2026
+</div>
 
-                renderizarPagos();
-                renderizarSMS();
-                actualizarKPIs();
-            } catch (error) {
-                console.log("Esperando conexión con el servidor...");
-            }
+<script>
+    let pagosCache = [];
+
+    async function actualizarDatos() {
+        try {
+            const [resPagos, resSms] = await Promise.all([
+                fetch('/api/pagos'),
+                fetch('/api/sms')
+            ]);
+            const pagos = await resPagos.json();
+            const sms = await resSms.json();
+            pagosCache = pagos;
+            renderPagos(pagos);
+            renderSms(sms);
+            actualizarEstadisticas(pagos);
+        } catch (err) {
+            console.error("Error actualizando datos:", err);
+        }
+    }
+
+    function renderPagos(pagos) {
+        const tbody = document.getElementById('tablaPagos');
+        const filtro = document.getElementById('buscarPago').value.toLowerCase();
+        const filtrados = pagos.filter(p => 
+            !filtro || 
+            (p.cliente || '').toLowerCase().includes(filtro) ||
+            (p.ref || '').toLowerCase().includes(filtro) ||
+            (p.telefono || '').toLowerCase().includes(filtro)
+        );
+
+        if (filtrados.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><div class="icon">📭</div>No hay pagos registrados aún</td></tr>';
+            return;
         }
 
-        function actualizarTasaBCV() {
-            const inputTasa = document.getElementById("tasa-bcv").value;
-            tasaBcvActual = parseFloat(inputTasa) || 1.0;
-            actualizarKPIs();
+        tbody.innerHTML = filtrados.map(p => `
+            <tr>
+                <td><strong>${p.cliente}</strong><br><small style="color:#8aa5c2;">${p.telefono}</small></td>
+                <td>${p.ref}</td>
+                <td><strong>Bs. ${(p.monto || 0).toFixed(2)}</strong></td>
+                <td>${p.banco}</td>
+                <td><span class="badge badge-${p.estado}">${p.estado}</span></td>
+                <td>
+                    ${p.estado === 'pendiente' ? `<button class="btn-success" style="padding:6px 12px; font-size:12px;" onclick="aprobarPago(${p.id})">✓ Aprobar</button>` : '—'}
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    function renderSms(sms) {
+        const cont = document.getElementById('listaSms');
+        if (sms.length === 0) {
+            cont.innerHTML = '<div class="empty-state"><div class="icon">📨</div>No hay SMS del banco aún</div>';
+            return;
         }
+        cont.innerHTML = sms.map(s => `
+            <div class="sms-item">
+                <div>${s.texto}</div>
+                <div class="fecha">📅 ${s.fecha}</div>
+            </div>
+        `).join('');
+    }
 
-        function renderizarPagos(listaFiltro = pagos) {
-            const tbody = document.getElementById("tabla-pagos-body");
-            tbody.innerHTML = "";
+    function actualizarEstadisticas(pagos) {
+        const aprobados = pagos.filter(p => p.estado === 'aprobado');
+        const pendientes = pagos.filter(p => p.estado === 'pendiente');
+        const totalBs = aprobados.reduce((s, p) => s + (p.monto || 0), 0);
+        const tasa = parseFloat(document.getElementById('tasaBcv').value) || 36.50;
 
-            if(listaFiltro.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="6" class="text-center py-6 text-slate-500">No hay pagos registrados aún. Envía una foto por WhatsApp o usa el simulador.</td></tr>`;
-                return;
-            }
+        document.getElementById('ventasBs').textContent = `Bs. ${totalBs.toFixed(2)}`;
+        document.getElementById('ventasUsd').textContent = `$${(totalBs / tasa).toFixed(2)}`;
+        document.getElementById('pendientes').textContent = pendientes.length;
+        document.getElementById('aprobados').textContent = aprobados.length;
+    }
 
-            listaFiltro.forEach(p => {
-                let badgeEstado = p.estado === 'aprobado' 
-                    ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-medium">Aprobado</span>`
-                    : `<span class="bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full font-medium">Pendiente</span>`;
+    function abrirModal() { document.getElementById('modalPago').classList.add('active'); }
+    function cerrarModal() { document.getElementById('modalPago').classList.remove('active'); }
 
-                const tr = document.createElement("tr");
-                tr.className = "hover:bg-slate-700/30 transition border-b border-slate-700/30";
-                tr.innerHTML = `
-                    <td class="py-3 px-4">
-                        <div class="font-medium text-white">${p.cliente}</div>
-                        <div class="text-slate-400 text-[11px]">${p.telefono}</div>
-                    </td>
-                    <td class="py-3 px-4 font-mono font-bold text-emerald-300">#${p.ref}</td>
-                    <td class="py-3 px-4 font-bold text-white">Bs. ${p.monto.toFixed(2)}</td>
-                    <td class="py-3 px-4 text-slate-300">${p.banco}</td>
-                    <td class="py-3 px-4">${badgeEstado}</td>
-                    <td class="py-3 px-4 text-right space-x-1">
-                        ${p.estado === 'pendiente' ? `<button onclick="aprobarDirecto(${p.id})" title="Aprobar Manual" class="p-1.5 bg-emerald-600/80 hover:bg-emerald-600 text-white rounded-md transition"><i class="fa-solid fa-check"></i></button>` : ''}
-                    </td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
-
-        function renderizarSMS() {
-            const container = document.getElementById("lista-sms");
-            container.innerHTML = "";
-            if(smsBanco.length === 0) {
-                container.innerHTML = `<div class="text-center py-6 text-slate-500 text-xs">No hay SMS del BDV registrados todavía.</div>`;
-                return;
-            }
-            smsBanco.forEach(sms => {
-                const div = document.createElement("div");
-                div.className = "bg-slate-900/80 border border-slate-700/60 rounded-xl p-3 space-y-1.5 text-xs shadow-sm";
-                div.innerHTML = `
-                    <div class="flex justify-between text-[10px] text-slate-400 font-medium">
-                        <span class="text-blue-400"><i class="fa-solid fa-building-columns"></i> BDV Notificación</span>
-                        <span>${sms.hora}</span>
-                    </div>
-                    <p class="text-slate-200 font-mono text-[11px]">${sms.texto}</p>
-                    <div class="flex justify-between items-center pt-1 text-[10px]">
-                        <span class="bg-slate-800 px-2 py-0.5 rounded text-emerald-400 font-mono font-bold">Ref: ${sms.ref}</span>
-                        <span class="text-slate-400 font-bold">Bs. ${sms.monto.toFixed(2)}</span>
-                    </div>
-                `;
-                container.appendChild(div);
-            });
-        }
-
-        function actualizarKPIs() {
-            let totalBs = pagos.filter(p => p.estado === 'aprobado').reduce((acc, curr) => acc + curr.monto, 0);
-            let totalUsd = totalBs / tasaBcvActual;
-            document.getElementById("kpi-total-bs").innerText = `Bs. ${totalBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-            document.getElementById("kpi-total-usd").innerText = `$${totalUsd.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-            document.getElementById("kpi-pendientes").innerText = pagos.filter(p => p.estado === 'pendiente').length;
-            document.getElementById("kpi-aprobados").innerText = pagos.filter(p => p.estado === 'aprobado').length;
-            document.getElementById("label-tasa-base").innerText = `Base ${tasaBcvActual.toFixed(2)} Bs/$`;
-        }
-
-        function filtrarPagos() {
-            const query = document.getElementById("busqueda-pagos").value.toLowerCase();
-            const filtrados = pagos.filter(p => p.cliente.toLowerCase().includes(query) || p.ref.toLowerCase().includes(query) || p.telefono.includes(query));
-            renderizarPagos(filtrados);
-        }
-
-        function abrirModalSimulador() { document.getElementById("modal-simulador").classList.remove("hidden"); }
-        function cerrarModalSimulador() { document.getElementById("modal-simulador").classList.add("hidden"); document.getElementById("form-simulador").reset(); }
-
-        async function guardarPagoSimulado(e) {
-            e.preventDefault();
-            const nuevoPago = {
-                cliente: document.getElementById("sim-nombre").value,
-                telefono: document.getElementById("sim-telefono").value,
-                referencia: document.getElementById("sim-ref").value,
-                monto: parseFloat(document.getElementById("sim-monto").value),
-                banco: "Banco de Venezuela"
-            };
-            await fetch(`${API_BASE}/webhook/whatsapp`, {
+    async function registrarPago() {
+        const data = {
+            cliente: document.getElementById('inpCliente').value || "Cliente Simulado",
+            telefono: document.getElementById('inpTelefono').value || "+584120000000",
+            referencia: document.getElementById('inpReferencia').value || "9999",
+            monto: parseFloat(document.getElementById('inpMonto').value) || 0,
+            banco: "Banco de Venezuela"
+        };
+        try {
+            await fetch('/webhook/whatsapp', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(nuevoPago)
+                body: JSON.stringify(data)
             });
-            cargarDatosServidor();
-            cerrarModalSimulador();
+            cerrarModal();
+            ['inpCliente','inpTelefono','inpReferencia','inpMonto'].forEach(id => document.getElementById(id).value = '');
+            actualizarDatos();
+        } catch (err) {
+            alert("Error al registrar: " + err.message);
         }
+    }
 
-        async function aprobarDirecto(id) {
-            const p = pagos.find(x => x.id === id);
-            if(p) {
-                p.estado = 'aprobado';
-                renderizarPagos();
-                actualizarKPIs();
-            }
+    async function aprobarPago(id) {
+        const pago = pagosCache.find(p => p.id === id);
+        if (!pago) return;
+        const ref = prompt("Confirma la referencia del SMS del BDV para aprobar:", pago.ref);
+        if (!ref) return;
+        try {
+            await fetch('/webhook/sms-banco', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ texto: `Pago recibido Ref: ${ref} Monto: ${pago.monto.toFixed(2)} Bs` })
+            });
+            actualizarDatos();
+        } catch (err) {
+            alert("Error: " + err.message);
         }
-    </script>
+    }
+
+    document.getElementById('buscarPago').addEventListener('input', () => renderPagos(pagosCache));
+    document.getElementById('tasaBcv').addEventListener('input', () => actualizarEstadisticas(pagosCache));
+
+    // Auto-refresh cada 5 segundos
+    actualizarDatos();
+    setInterval(actualizarDatos, 5000);
+</script>
+
 </body>
 </html>
