@@ -3,192 +3,414 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>📱 Escanear QR - Validador BDV</title>
+<title>🏦 Validador BDV - Monitor de Pagos</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-    background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    background: #f5f7fa;
     min-height: 100vh;
+    color: #2c3e50;
+  }
+  .topbar {
+    background: linear-gradient(135deg, #0033A0 0%, #001f6b 100%);
+    color: white;
+    padding: 20px 30px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+  }
+  .topbar h1 {
+    font-size: 24px;
     display: flex;
     align-items: center;
-    justify-content: center;
-    padding: 20px;
+    gap: 10px;
   }
-  .card {
-    background: white;
-    border-radius: 20px;
-    padding: 40px 30px;
-    max-width: 480px;
-    width: 100%;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-    text-align: center;
-  }
-  h1 { color: #128C7E; margin-bottom: 10px; font-size: 24px; }
-  .status {
-    padding: 12px;
-    border-radius: 10px;
-    margin: 20px 0;
-    font-weight: 600;
+  .topbar .logo {
+    background: #F7D000;
+    color: #0033A0;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-weight: 900;
     font-size: 14px;
   }
-  .status.loading { background: #FFF3CD; color: #856404; }
-  .status.ready { background: #D4EDDA; color: #155724; }
-  .status.connected { background: #D1ECF1; color: #0C5460; }
-  .status.error { background: #F8D7DA; color: #721C24; }
-  .qr-container {
-    margin: 20px auto;
-    padding: 20px;
-    background: #f8f9fa;
-    border-radius: 15px;
-    display: inline-block;
+  .topbar .actions {
+    display: flex;
+    gap: 10px;
   }
-  .qr-container img {
-    max-width: 280px;
-    width: 100%;
-    border-radius: 10px;
-    border: 4px solid #25D366;
-  }
-  .spinner {
-    width: 50px; height: 50px;
-    border: 5px solid #f3f3f3;
-    border-top: 5px solid #25D366;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    margin: 30px auto;
-  }
-  @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-  .instructions {
-    background: #f8f9fa;
-    padding: 15px;
-    border-radius: 10px;
-    margin-top: 20px;
-    text-align: left;
-    font-size: 14px;
-    color: #555;
-  }
-  .instructions ol { padding-left: 20px; margin-top: 8px; }
-  .instructions li { margin: 6px 0; }
   .btn {
-    display: inline-block;
-    padding: 10px 20px;
-    margin: 5px;
+    padding: 10px 18px;
     border: none;
     border-radius: 8px;
     cursor: pointer;
     font-weight: 600;
     font-size: 14px;
-    transition: all 0.2s;
     text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s;
   }
-  .btn-primary { background: #25D366; color: white; }
-  .btn-primary:hover { background: #128C7E; }
-  .btn-danger { background: #dc3545; color: white; }
-  .btn-danger:hover { background: #a71d2a; }
-  .btn-secondary { background: #6c757d; color: white; }
-  .btn-secondary:hover { background: #545b62; }
-  .timer {
-    color: #dc3545;
+  .btn-yellow { background: #F7D000; color: #0033A0; }
+  .btn-yellow:hover { background: #e6c200; transform: translateY(-2px); }
+  .btn-white { background: white; color: #0033A0; }
+  .btn-white:hover { background: #f0f0f0; }
+  .btn-success { background: #27ae60; color: white; }
+  .btn-success:hover { background: #229954; }
+
+  .container { max-width: 1300px; margin: 0 auto; padding: 25px; }
+
+  .status-bar {
+    background: white;
+    padding: 12px 20px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .status-bar .live {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #555;
+  }
+  .dot {
+    width: 10px; height: 10px;
+    background: #27ae60;
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(39,174,96,0.7); }
+    50% { opacity: 0.7; box-shadow: 0 0 0 8px rgba(39,174,96,0); }
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 18px;
+    margin-bottom: 25px;
+  }
+  .stat-card {
+    background: white;
+    padding: 22px;
+    border-radius: 12px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+    border-left: 5px solid #0033A0;
+    transition: transform 0.2s;
+  }
+  .stat-card:hover { transform: translateY(-3px); }
+  .stat-card.ventas { border-left-color: #27ae60; }
+  .stat-card.pendientes { border-left-color: #f39c12; }
+  .stat-card.aprobados { border-left-color: #27ae60; }
+  .stat-card.total { border-left-color: #3498db; }
+  .stat-card .label {
+    font-size: 12px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
     font-weight: 600;
-    margin-top: 10px;
-    font-size: 13px;
   }
-  .actions { margin-top: 20px; }
+  .stat-card .value {
+    font-size: 28px;
+    font-weight: 800;
+    color: #0033A0;
+  }
+  .stat-card.ventas .value { color: #27ae60; }
+  .stat-card.pendientes .value { color: #f39c12; }
+  .stat-card.aprobados .value { color: #27ae60; }
+  .stat-card.total .value { color: #3498db; }
+
+  .panel {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+    overflow: hidden;
+    margin-bottom: 25px;
+  }
+  .panel-header {
+    background: linear-gradient(135deg, #0033A0 0%, #001f6b 100%);
+    color: white;
+    padding: 18px 22px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .panel-header h2 {
+    font-size: 17px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    background: #f8f9fa;
+    text-align: left;
+    padding: 14px 12px;
+    font-size: 12px;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid #e9ecef;
+    font-weight: 700;
+  }
+  td {
+    padding: 14px 12px;
+    border-bottom: 1px solid #f0f2f5;
+    font-size: 14px;
+    color: #333;
+  }
+  tr:hover td { background: #fafbfc; }
+
+  .badge {
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-pendiente { background: #fff3cd; color: #856404; }
+  .badge-aprobado { background: #d4edda; color: #155724; }
+  .badge-rechazado { background: #f8d7da; color: #721c24; }
+
+  .empty {
+    text-align: center;
+    padding: 50px 20px;
+    color: #999;
+  }
+  .empty-icon { font-size: 48px; margin-bottom: 10px; opacity: 0.4; }
+
+  code {
+    background: #f1f3f5;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    color: #d63384;
+  }
+
+  .btn-sm {
+    padding: 6px 12px;
+    font-size: 12px;
+    margin: 2px;
+  }
+
+  @media (max-width: 768px) {
+    .topbar h1 { font-size: 18px; }
+    .stat-card .value { font-size: 22px; }
+    th, td { padding: 8px 6px; font-size: 12px; }
+  }
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>📱 Vincular WhatsApp</h1>
-  <div id="status" class="status loading">⏳ Conectando con el servidor...</div>
-  <div id="qr-area">
-    <div class="spinner"></div>
-  </div>
-  <div class="instructions">
-    <strong>📋 Pasos:</strong>
-    <ol>
-      <li>Abre <b>WhatsApp</b> en tu teléfono</li>
-      <li>Ve a <b>⋮ Menú → Dispositivos vinculados</b></li>
-      <li>Toca <b>Vincular un dispositivo</b></li>
-      <li>Escanea el código QR</li>
-    </ol>
-  </div>
+
+<div class="topbar">
+  <h1>
+    <span class="logo">BDV</span>
+    Validador de Pagos
+  </h1>
   <div class="actions">
-    <a href="/" class="btn btn-secondary">← Volver al panel</a>
-    <button id="restartBtn" class="btn btn-danger" style="display:none;">🔄 Forzar nuevo QR</button>
+    <a href="/qr" target="_blank" class="btn btn-yellow">📱 Ver QR</a>
+    <a href="/api/status" target="_blank" class="btn btn-white">🔍 Estado</a>
   </div>
 </div>
 
+<div class="container">
+
+  <div class="status-bar">
+    <div class="live">
+      <div class="dot"></div>
+      <span>Monitor en tiempo real</span>
+    </div>
+    <div style="font-size:13px; color:#666;">
+      Última actualización: <span id="lastUpdate">--:--:--</span>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card ventas">
+      <div class="label">💰 Ventas Hoy</div>
+      <div class="value" id="ventas">Bs. 0,00</div>
+    </div>
+    <div class="stat-card pendientes">
+      <div class="label">⏳ Pendientes</div>
+      <div class="value" id="pendientes">0</div>
+    </div>
+    <div class="stat-card aprobados">
+      <div class="label">✅ Aprobados</div>
+      <div class="value" id="aprobados">0</div>
+    </div>
+    <div class="stat-card total">
+      <div class="label">📊 Total Registros</div>
+      <div class="value" id="total">0</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>📸 Pagos Recibidos por WhatsApp</h2>
+      <button class="btn btn-yellow btn-sm" onclick="cargarPagos()">🔄 Actualizar</button>
+    </div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Cliente</th>
+            <th>Teléfono</th>
+            <th>Referencia</th>
+            <th>Monto</th>
+            <th>Banco</th>
+            <th>Fecha</th>
+            <th>Estado</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="tablaPagos">
+          <tr><td colspan="8" class="empty"><div class="empty-icon">⏳</div>Cargando datos...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h2>📱 SMS del Banco (BDV)</h2>
+    </div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr><th>Texto del SMS</th><th>Fecha</th></tr>
+        </thead>
+        <tbody id="tablaSMS">
+          <tr><td colspan="2" class="empty"><div class="empty-icon">📭</div>Sin SMS aún</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
 <script>
-let qrTimer = null;
-let qrExpira = 0;
-
-async function verificarQR() {
+async function cargarPagos() {
   try {
-    const res = await fetch('/api/qr-status');
-    const data = await res.json();
-    const statusEl = document.getElementById('status');
-    const qrArea = document.getElementById('qr-area');
-    const restartBtn = document.getElementById('restartBtn');
+    const res = await fetch('/api/pagos');
+    const pagos = await res.json();
+    const tbody = document.getElementById('tablaPagos');
 
-    if (data.status === 'conectado') {
-      statusEl.className = 'status connected';
-      statusEl.innerHTML = '✅ WhatsApp ya está vinculado';
-      qrArea.innerHTML = '<div style="font-size:60px;">✅</div><p style="margin-top:10px;color:#155724;">Puedes cerrar esta ventana</p>';
-      restartBtn.style.display = 'inline-block';
-      if (qrTimer) clearInterval(qrTimer);
+    if (pagos.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="empty-icon">📭</div>No hay pagos registrados aún.<br><small>Los clientes pueden enviar comprobantes por WhatsApp.</small></td></tr>';
+      document.getElementById('ventas').textContent = 'Bs. 0,00';
+      document.getElementById('pendientes').textContent = '0';
+      document.getElementById('aprobados').textContent = '0';
+      document.getElementById('total').textContent = '0';
       return;
     }
 
-    if (data.status === 'error') {
-      statusEl.className = 'status error';
-      statusEl.innerHTML = `❌ ${data.message || 'Error de conexión'}`;
-      qrArea.innerHTML = '<div style="font-size:60px;">⚠️</div>';
-      restartBtn.style.display = 'inline-block';
-      return;
-    }
+    let ventas = 0, pendientes = 0, aprobados = 0;
+    tbody.innerHTML = pagos.map(p => {
+      const montoNum = parseFloat(p.monto) || 0;
+      if (p.estado === 'aprobado') { ventas += montoNum; aprobados++; }
+      else if (p.estado === 'pendiente') { pendientes++; }
 
-    if (data.qr) {
-      statusEl.className = 'status ready';
-      statusEl.innerHTML = '📱 Escanea el código QR con WhatsApp';
-      qrArea.innerHTML = `<div class="qr-container"><img src="${data.qr}" alt="QR"></div>
-        <div class="timer" id="timer">El QR expira en ~20 segundos</div>`;
-      restartBtn.style.display = 'inline-block';
-      iniciarContador();
-    } else {
-      statusEl.className = 'status loading';
-      statusEl.innerHTML = '⏳ Generando código QR...';
-      qrArea.innerHTML = '<div class="spinner"></div>';
-    }
+      const badgeClass = p.estado === 'aprobado' ? 'badge-aprobado' : p.estado === 'rechazado' ? 'badge-rechazado' : 'badge-pendiente';
+      const estadoTexto = p.estado.charAt(0).toUpperCase() + p.estado.slice(1);
+      const montoFmt = new Intl.NumberFormat('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(montoNum);
+
+      let acciones = '';
+      if (p.estado === 'pendiente') {
+        acciones = `<button class="btn btn-success btn-sm" onclick="aprobar(${p.id})">✅</button>
+                    <button class="btn btn-yellow btn-sm" onclick="cambiarBanco(${p.id})">🏦</button>`;
+      } else {
+        acciones = '<span style="color:#bbb;">—</span>';
+      }
+
+      return `<tr>
+        <td><strong>${p.cliente || 'N/A'}</strong></td>
+        <td>${p.telefono || 'N/A'}</td>
+        <td><code>${p.ref || 'SIN_REF'}</code></td>
+        <td><strong>Bs. ${montoFmt}</strong></td>
+        <td>${p.banco || 'Por confirmar'}</td>
+        <td>${p.fecha || 'N/A'}</td>
+        <td><span class="badge ${badgeClass}">${estadoTexto}</span></td>
+        <td>${acciones}</td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('ventas').textContent = 'Bs. ' + new Intl.NumberFormat('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(ventas);
+    document.getElementById('pendientes').textContent = pendientes;
+    document.getElementById('aprobados').textContent = aprobados;
+    document.getElementById('total').textContent = pagos.length;
+    document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
   } catch (err) {
-    document.getElementById('status').className = 'status error';
-    document.getElementById('status').innerHTML = '❌ No se puede conectar al servidor';
+    console.error('Error:', err);
+    document.getElementById('tablaPagos').innerHTML = '<tr><td colspan="8" class="empty" style="color:red;">❌ Error de conexión con el servidor</td></tr>';
   }
 }
 
-function iniciarContador() {
-  let seg = 20;
-  if (qrTimer) clearInterval(qrTimer);
-  qrTimer = setInterval(() => {
-    seg--;
-    const t = document.getElementById('timer');
-    if (t) t.textContent = `El QR expira en ${seg} segundos`;
-    if (seg <= 0) {
-      clearInterval(qrTimer);
-      verificarQR();
+async function cargarSMS() {
+  try {
+    const res = await fetch('/api/sms');
+    const sms = await res.json();
+    const tbody = document.getElementById('tablaSMS');
+    if (sms.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="2" class="empty"><div class="empty-icon">📭</div>Sin SMS aún</td></tr>';
+      return;
     }
-  }, 1000);
+    tbody.innerHTML = sms.map(s => `<tr><td>${s.texto}</td><td>${s.fecha}</td></tr>`).join('');
+  } catch (err) {
+    console.error('Error SMS:', err);
+  }
 }
 
-document.getElementById('restartBtn').addEventListener('click', async () => {
-  if (!confirm('¿Forzar nuevo código QR? Se cerrará la sesión actual.')) return;
-  document.getElementById('status').innerHTML = '🔄 Reiniciando...';
-  await fetch('/api/restart-whatsapp', { method: 'POST' });
-  setTimeout(verificarQR, 3000);
-});
+async function aprobar(id) {
+  if (!confirm('¿Aprobar este pago?')) return;
+  await fetch(`/api/pagos/${id}/estado`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ estado: 'aprobado' })
+  });
+  cargarPagos();
+}
 
-// Polling cada 3 segundos
-verificarQR();
-setInterval(verificarQR, 3000);
+async function cambiarBanco(id) {
+  try {
+    const res = await fetch('/api/bancos');
+    const bancos = await res.json();
+    const lista = bancos.map((b, i) => `${i + 1}. ${b}`).join('\n');
+    const seleccion = prompt('Escribe el número del banco:\n\n' + lista);
+    if (!seleccion) return;
+    const idx = parseInt(seleccion) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= bancos.length) {
+      alert('Número inválido');
+      return;
+    }
+    await fetch(`/api/pagos/${id}/banco`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ banco: bancos[idx] })
+    });
+    cargarPagos();
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+cargarPagos();
+cargarSMS();
+setInterval(cargarPagos, 5000);
+setInterval(cargarSMS, 10000);
 </script>
+
 </body>
 </html>
