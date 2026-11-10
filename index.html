@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>📱 Escanear QR - Validador BDV</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    background: white;
+    border-radius: 20px;
+    padding: 40px 30px;
+    max-width: 480px;
+    width: 100%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    text-align: center;
+  }
+  h1 { color: #128C7E; margin-bottom: 10px; font-size: 24px; }
+  .status {
+    padding: 12px;
+    border-radius: 10px;
+    margin: 20px 0;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .status.loading { background: #FFF3CD; color: #856404; }
+  .status.ready { background: #D4EDDA; color: #155724; }
+  .status.connected { background: #D1ECF1; color: #0C5460; }
+  .status.error { background: #F8D7DA; color: #721C24; }
+  .qr-container {
+    margin: 20px auto;
+    padding: 20px;
+    background: #f8f9fa;
+    border-radius: 15px;
+    display: inline-block;
+  }
+  .qr-container img {
+    max-width: 280px;
+    width: 100%;
+    border-radius: 10px;
+    border: 4px solid #25D366;
+  }
+  .spinner {
+    width: 50px; height: 50px;
+    border: 5px solid #f3f3f3;
+    border-top: 5px solid #25D366;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 30px auto;
+  }
+  @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  .instructions {
+    background: #f8f9fa;
+    padding: 15px;
+    border-radius: 10px;
+    margin-top: 20px;
+    text-align: left;
+    font-size: 14px;
+    color: #555;
+  }
+  .instructions ol { padding-left: 20px; margin-top: 8px; }
+  .instructions li { margin: 6px 0; }
+  .btn {
+    display: inline-block;
+    padding: 10px 20px;
+    margin: 5px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+    transition: all 0.2s;
+    text-decoration: none;
+  }
+  .btn-primary { background: #25D366; color: white; }
+  .btn-primary:hover { background: #128C7E; }
+  .btn-danger { background: #dc3545; color: white; }
+  .btn-danger:hover { background: #a71d2a; }
+  .btn-secondary { background: #6c757d; color: white; }
+  .btn-secondary:hover { background: #545b62; }
+  .timer {
+    color: #dc3545;
+    font-weight: 600;
+    margin-top: 10px;
+    font-size: 13px;
+  }
+  .actions { margin-top: 20px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>📱 Vincular WhatsApp</h1>
+  <div id="status" class="status loading">⏳ Conectando con el servidor...</div>
+  <div id="qr-area">
+    <div class="spinner"></div>
+  </div>
+  <div class="instructions">
+    <strong>📋 Pasos:</strong>
+    <ol>
+      <li>Abre <b>WhatsApp</b> en tu teléfono</li>
+      <li>Ve a <b>⋮ Menú → Dispositivos vinculados</b></li>
+      <li>Toca <b>Vincular un dispositivo</b></li>
+      <li>Escanea el código QR</li>
+    </ol>
+  </div>
+  <div class="actions">
+    <a href="/" class="btn btn-secondary">← Volver al panel</a>
+    <button id="restartBtn" class="btn btn-danger" style="display:none;">🔄 Forzar nuevo QR</button>
+  </div>
+</div>
+
+<script>
+let qrTimer = null;
+let qrExpira = 0;
+
+async function verificarQR() {
+  try {
+    const res = await fetch('/api/qr-status');
+    const data = await res.json();
+    const statusEl = document.getElementById('status');
+    const qrArea = document.getElementById('qr-area');
+    const restartBtn = document.getElementById('restartBtn');
+
+    if (data.status === 'conectado') {
+      statusEl.className = 'status connected';
+      statusEl.innerHTML = '✅ WhatsApp ya está vinculado';
+      qrArea.innerHTML = '<div style="font-size:60px;">✅</div><p style="margin-top:10px;color:#155724;">Puedes cerrar esta ventana</p>';
+      restartBtn.style.display = 'inline-block';
+      if (qrTimer) clearInterval(qrTimer);
+      return;
+    }
+
+    if (data.status === 'error') {
+      statusEl.className = 'status error';
+      statusEl.innerHTML = `❌ ${data.message || 'Error de conexión'}`;
+      qrArea.innerHTML = '<div style="font-size:60px;">⚠️</div>';
+      restartBtn.style.display = 'inline-block';
+      return;
+    }
+
+    if (data.qr) {
+      statusEl.className = 'status ready';
+      statusEl.innerHTML = '📱 Escanea el código QR con WhatsApp';
+      qrArea.innerHTML = `<div class="qr-container"><img src="${data.qr}" alt="QR"></div>
+        <div class="timer" id="timer">El QR expira en ~20 segundos</div>`;
+      restartBtn.style.display = 'inline-block';
+      iniciarContador();
+    } else {
+      statusEl.className = 'status loading';
+      statusEl.innerHTML = '⏳ Generando código QR...';
+      qrArea.innerHTML = '<div class="spinner"></div>';
+    }
+  } catch (err) {
+    document.getElementById('status').className = 'status error';
+    document.getElementById('status').innerHTML = '❌ No se puede conectar al servidor';
+  }
+}
+
+function iniciarContador() {
+  let seg = 20;
+  if (qrTimer) clearInterval(qrTimer);
+  qrTimer = setInterval(() => {
+    seg--;
+    const t = document.getElementById('timer');
+    if (t) t.textContent = `El QR expira en ${seg} segundos`;
+    if (seg <= 0) {
+      clearInterval(qrTimer);
+      verificarQR();
+    }
+  }, 1000);
+}
+
+document.getElementById('restartBtn').addEventListener('click', async () => {
+  if (!confirm('¿Forzar nuevo código QR? Se cerrará la sesión actual.')) return;
+  document.getElementById('status').innerHTML = '🔄 Reiniciando...';
+  await fetch('/api/restart-whatsapp', { method: 'POST' });
+  setTimeout(verificarQR, 3000);
+});
+
+// Polling cada 3 segundos
+verificarQR();
+setInterval(verificarQR, 3000);
+</script>
+</body>
+</html>

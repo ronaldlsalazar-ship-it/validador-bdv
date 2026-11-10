@@ -1,0 +1,24 @@
+{
+  "name": "validador-bdv-bot",
+  "version": "1.3.0",
+  "description": "Bot validador BDV con OCR, detección de banco emisor y WhatsApp",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "pino": "^9.0.0",
+    "qrcode": "^1.5.3",
+    "qrcode-terminal": "^0.12.0",
+    "sharp": "^0.32.6",
+    "tesseract.js": "^5.1.1"
+  }
+}
