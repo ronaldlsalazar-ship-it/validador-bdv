@@ -130,34 +130,46 @@ function cargarPagos() {
       var montoNum = parseFloat(p.monto) || 0;
       if (p.estado === 'aprobado') { ventas += montoNum; aprobados++; }
       else if (p.estado === 'pendiente') { pendientes++; }
+
       var badgeClass = p.estado === 'aprobado' ? 'badge-aprobado' : (p.estado === 'rechazado' ? 'badge-rechazado' : 'badge-pendiente');
       var estadoTexto = p.estado.charAt(0).toUpperCase() + p.estado.slice(1);
       var montoFmt = montoNum.toFixed(2);
-      var requiereManual = p.requiereEdicionManual === true;
-      var filaClass = requiereManual ? ' class="fila-manual"' : '';
 
-      // Botones de accion
+      var celdaCliente = '<strong>' + (p.cliente || 'N/A') + '</strong>';
+      if (p.pagadorBanco) {
+        celdaCliente += '<br><small style="color:#0033A0;">Pagador BDV: ' + p.pagadorBanco + '</small>';
+      }
+
+      var celdaTelefono = '';
+      if (p.telefonoPagador) {
+        celdaTelefono += '<strong style="color:#27ae60;">' + p.telefonoPagador + '</strong><br><small style="color:#888;">telefono del pago</small>';
+      }
+      if (p.telefono) {
+        celdaTelefono += (celdaTelefono ? '<br>' : '') + '<small style="color:#888;">WhatsApp: ' + p.telefono + '</small>';
+      }
+      if (!celdaTelefono) celdaTelefono = 'N/A';
+
       var acciones = '';
       if (p.estado === 'pendiente') {
-        if (montoNum === 0 || p.ref === 'PENDIENTE_CONFIRMACION' || p.ref === 'SIN_REF') {
-          acciones += '<button class="btn btn-yellow btn-sm" onclick="editarPago(' + p.id + ')">Editar</button> ';
-        } else {
-          acciones += '<button class="btn btn-success btn-sm" onclick="aprobar(' + p.id + ')">Aprobar</button> ';
-        }
+        acciones += '<button class="btn btn-success btn-sm" onclick="aprobar(' + p.id + ')">Aprobar</button> ';
+      }
+      if (typeof cambiarBanco === 'function') {
         acciones += '<button class="btn btn-yellow btn-sm" onclick="cambiarBanco(' + p.id + ')">Banco</button> ';
+      }
+      if (typeof editarPago === 'function') {
+        acciones += '<button class="btn btn-yellow btn-sm" onclick="editarPago(' + p.id + ')">Editar</button> ';
+      }
+      if (typeof eliminarPago === 'function') {
         acciones += '<button class="btn btn-danger btn-sm" onclick="eliminarPago(' + p.id + ')">Eliminar</button>';
-      } else {
-        acciones = '<button class="btn btn-danger btn-sm" onclick="eliminarPago(' + p.id + ')">Eliminar</button>';
+      }
+      if (!acciones) acciones = '-';
+
+      var refMostrar = '<code>' + (p.ref || 'SIN_REF') + '</code>';
+      if (p.confirmadoPorBanco) {
+        refMostrar += '<br><small style="color:#27ae60;">confirmado BDV</small>';
       }
 
-      var refMostrar = p.ref;
-      if (requiereManual) {
-        refMostrar = '<span class="badge badge-manual">Requiere edicion</span>';
-      } else {
-        refMostrar = '<code>' + (p.ref || 'SIN_REF') + '</code>';
-      }
-
-      html += '<tr' + filaClass + '><td><strong>' + (p.cliente || 'N/A') + '</strong></td><td>' + (p.telefono || 'N/A') + '</td><td>' + refMostrar + '</td><td><strong>Bs. ' + montoFmt + '</strong></td><td>' + (p.banco || 'Por confirmar') + '</td><td>' + (p.fecha || 'N/A') + '</td><td><span class="badge ' + badgeClass + '">' + estadoTexto + '</span></td><td>' + acciones + '</td></tr>';
+      html += '<tr><td>' + celdaCliente + '</td><td>' + celdaTelefono + '</td><td>' + refMostrar + '</td><td><strong>Bs. ' + montoFmt + '</strong></td><td>' + (p.banco || 'Por confirmar') + '</td><td>' + (p.fecha || 'N/A') + '</td><td><span class="badge ' + badgeClass + '">' + estadoTexto + '</span></td><td>' + acciones + '</td></tr>';
     }
     tbody.innerHTML = html;
     document.getElementById('ventas').textContent = 'Bs. ' + ventas.toFixed(2);

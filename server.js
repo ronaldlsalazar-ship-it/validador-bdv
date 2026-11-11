@@ -608,7 +608,9 @@ async function iniciarWhatsApp(forceNew) {
       if (!remitente || remitente.indexOf('@g.us') !== -1) return;
 
       const nombreCliente = msg.pushName || 'Cliente';
-      const telefonoLimpio = remitente.split('@')[0].replace(/[^0-9]/g, '');
+      const jidReal = msg.key.remoteJidAlt || msg.key.participantAlt || remitente;
+      const esLid = String(remitente).indexOf('@lid') !== -1 && String(jidReal).indexOf('@s.whatsapp.net') === -1;
+      const telefonoLimpio = esLid ? '' : String(jidReal).split('@')[0].replace(/[^0-9]/g, '');
 
       let contenido = msg.message;
       if (contenido.ephemeralMessage) contenido = contenido.ephemeralMessage.message;
@@ -757,6 +759,7 @@ function parsearNotificacionBDV(texto) {
     valido: false,
     tipo: 'desconocido',
     nombre: '',
+    telefono: '',
     monto: 0,
     referencia: '',
     fecha: '',
@@ -768,14 +771,9 @@ function parsearNotificacionBDV(texto) {
     return r;
   }
 
-  const t = texto.replace(/\s+/g, ' ').trim();
+  const original = texto.replace(/\s+/g, ' ').trim();
+  const t = quitarAcentos(original);
   const lower = t.toLowerCase();
-
-  const esRecibido = /recibiste|recibido|recibida|abono recibido|pago recibido/.test(lower);
-  if (!esRecibido) {
-    r.motivo = 'No es un aviso de pago recibido';
-    return r;
-  }
 
   if (/pagomovil|pago movil/.test(lower)) {
     r.tipo = 'pago_movil';
@@ -803,24 +801,60 @@ function parsearNotificacionBDV(texto) {
     if (!isNaN(n)) r.monto = Math.round(n * 100) / 100;
   }
 
-  const mRef = t.match(/(?:numero|nro|no|num)\.?\s*(?:de\s*)?(?:operacion|referencia|control)\s*[:#]?\s*(\d{6,20})/i);
+  const mTel = t.match(/\b(04(?:12|14|16|24|26))[\s\-.]?(\d{7})\b/);
+  if (mTel) {
+    r.telefono = mTel[1] + '-' + mTel[2];
+  }
+  if (!r.telefono) {
+    const mTel2 = t.match(/\b(02\d{2})[\s\-.]?(\d{7})\b/);
+    if (mTel2) r.telefono = mTel2[1] + '-' + mTel2[2];
+  }
+
+  const mRef = t.match(/(?:ref(?:erencia)?|numero\s*de\s*operacion|nro\.?\s*de\s*operacion|num\.?\s*de\s*operacion|numero\s*de\s*referencia|operacion|control)\s*[:.#]?\s*(\d{6,20})/i);
   if (mRef) {
     r.referencia = mRef[1];
   } else {
-    const mRef2 = t.match(/\b(\d{10,20})\b/);
+    let sinRuido = t.replace(/Bs\.?\s*[\d.,]+/i, ' ');
+    if (r.telefono) sinRuido = sinRuido.replace(r.telefono, ' ');
+    const mRef2 = sinRuido.match(/\b(\d{8,20})\b/);
     if (mRef2) r.referencia = mRef2[1];
   }
 
-  const mNombre = t.match(/\bde\s+([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚáéíóúÑñ\s.]{3,60}?)\s+por\s+Bs/i);
+  const mNombre = t.match(/\bde\s+([A-Z][A-Za-z\s.]{3,60}?)\s+por\s+Bs/i);
   if (mNombre) r.nombre = mNombre[1].trim().replace(/\s+/g, ' ');
 
-  const mFecha = t.match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{1,2}:\d{2})(?:\s*([APap]\.?[Mm]\.?))?/);
-  if (mFecha) {
-    r.fecha = mFecha[1] + '/' + mFecha[2] + '/' + mFecha[3] + ' ' + mFecha[4] + (mFecha[5] ? ' ' + mFecha[5].toUpperCase() : '');
+  const mHora = t.match(/hora\s*[:.]?\s*(\d{1,2}:\d{2})/i);
+  const mFechaCorta = t.match(/fecha\s*[:.]?\s*(\d{2})[-\/](\d{2})[-\/](\d{2,4})/i);
+  if (mFechaCorta) {
+    let anio = mFechaCorta[3];
+    if (anio.length === 2) anio = '20' + anio;
+    r.fecha = mFechaCorta[1] + '/' + mFechaCorta[2] + '/' + anio;
+    if (mHora) r.fecha = r.fecha + ' ' + mHora[1];
+  }
+  if (!r.fecha) {
+    const mFecha = t.match(/(\d{2})[-\/](\d{2})[-\/](\d{4})(?:\s+(\d{1,2}:\d{2})(?:\s*([APap]\.?[Mm]\.?))?)?/);
+    if (mFecha) {
+      r.fecha = mFecha[1] + '/' + mFecha[2] + '/' + mFecha[3];
+      if (mFecha[4]) r.fecha = r.fecha + ' ' + mFecha[4] + (mFecha[5] ? ' ' + mFecha[5].toUpperCase() : '');
+    }
   }
 
-  if (!r.monto || !r.referencia) {
-    r.motivo = 'No se detecto monto o referencia';
+  if (!r.monto && !r.referencia) {
+    r.motivo = 'No se detecto monto ni referencia';
+    return r;
+  }
+  if (!r.monto) {
+    r.motivo = 'No se detecto el monto';
+    return r;
+  }
+  if (!r.referencia) {
+    r.motivo = 'No se detecto la referencia';
+    return r;
+  }
+
+  const esRecibido = /recibiste|recibido|recibida|abono|pago recibido/.test(lower);
+  if (!esRecibido && r.tipo === 'desconocido') {
+    r.motivo = 'Tiene monto y referencia pero no se identifica el tipo de operacion';
     return r;
   }
 
@@ -973,29 +1007,34 @@ app.post('/webhook/sms-banco', function(req, res) {
   try {
     const tokenEsperado = process.env.WEBHOOK_TOKEN || '';
     let cuerpo = req.body;
-    if (typeof cuerpo === 'string') {
-      cuerpo = { texto: cuerpo };
-    }
-    if (!cuerpo) cuerpo = {};
+    if (typeof cuerpo === 'string') cuerpo = { texto: cuerpo };
+    if (!cuerpo || typeof cuerpo !== 'object') cuerpo = {};
 
     const tokenRecibido = cuerpo.token || req.query.token || req.headers['x-token'] || '';
     if (tokenEsperado && tokenRecibido !== tokenEsperado) {
       return res.status(401).json({ status: 'error', message: 'Token invalido' });
     }
 
-    let texto = cuerpo.texto || cuerpo.text || cuerpo.message || cuerpo.sms || cuerpo.body || cuerpo.content || cuerpo.notificacion || '';
+    let texto = cuerpo.texto || cuerpo.text || cuerpo.message || cuerpo.sms || cuerpo.body || cuerpo.content || cuerpo.notificacion || cuerpo.notification || req.query.texto || '';
     const titulo = cuerpo.titulo || cuerpo.title || '';
-    if (titulo && texto.indexOf(titulo) === -1) {
-      texto = titulo + ' ' + texto;
+
+    if (!texto) {
+      const valores = Object.keys(cuerpo).filter(function(k) {
+        return k !== 'token' && typeof cuerpo[k] === 'string' && cuerpo[k].length > 0;
+      }).map(function(k) { return cuerpo[k]; });
+      if (valores.length > 0) texto = valores.join(' ');
     }
-    texto = String(texto).trim();
+    if (titulo && String(texto).indexOf(titulo) === -1) texto = titulo + ' ' + texto;
+    texto = String(texto).replace(/\s+/g, ' ').trim();
+
+    console.log('[BANCO-DEBUG] Texto final (' + texto.length + ' chars): ' + texto.substring(0, 400));
 
     if (!texto) {
       return res.status(400).json({ status: 'error', message: 'No se recibio texto' });
     }
 
     const notif = parsearNotificacionBDV(texto);
-    console.log('[BANCO] Tipo: ' + notif.tipo + ' | Monto: ' + notif.monto + ' | Ref: ' + notif.referencia + ' | Valido: ' + notif.valido);
+    console.log('[BANCO] Tipo: ' + notif.tipo + ' | Monto: ' + notif.monto + ' | Ref: ' + notif.referencia + ' | Pagador: ' + (notif.nombre || 'sin nombre') + ' | Tel: ' + (notif.telefono || 'sin telefono') + ' | Valido: ' + notif.valido);
 
     const registro = {
       id: Date.now(),
@@ -1004,6 +1043,7 @@ app.post('/webhook/sms-banco', function(req, res) {
       fechaBanco: notif.fecha,
       tipo: notif.tipo,
       pagador: notif.nombre,
+      telefonoPagador: notif.telefono,
       monto: notif.monto,
       referencia: notif.referencia,
       procesado: notif.valido,
@@ -1012,7 +1052,7 @@ app.post('/webhook/sms-banco', function(req, res) {
 
     if (!notif.valido) {
       smsBancoBD.unshift(registro);
-      return res.json({ status: 'info', message: notif.motivo });
+      return res.json({ status: 'info', message: notif.motivo, parseado: notif });
     }
 
     const yaExiste = smsBancoBD.find(function(s) {
@@ -1030,9 +1070,11 @@ app.post('/webhook/sms-banco', function(req, res) {
       pago.ref = notif.referencia;
       pago.banco = 'Banco de Venezuela';
       pago.tipoOperacion = notif.tipo;
-      pago.pagadorBanco = notif.nombre;
+      if (notif.nombre) pago.pagadorBanco = notif.nombre;
+      if (notif.telefono) pago.telefonoPagador = notif.telefono;
       pago.confirmadoPorBanco = true;
       pago.criterioConciliacion = hallado.criterio;
+      pago.fechaBanco = notif.fecha;
       pago.fechaAprobacion = new Date().toLocaleString();
       registro.pagoId = pago.id;
       registro.conciliado = true;
@@ -1047,19 +1089,22 @@ app.post('/webhook/sms-banco', function(req, res) {
         });
       }
 
-      return res.json({ status: 'success', conciliado: true, criterio: hallado.criterio, pagoId: pago.id, referencia: notif.referencia, monto: notif.monto });
+      return res.json({ status: 'success', conciliado: true, criterio: hallado.criterio, pagoId: pago.id, referencia: notif.referencia, monto: notif.monto, pagador: notif.nombre, telefonoPagador: notif.telefono });
     }
 
     pagosBD.unshift({
       id: Date.now() + 1,
-      cliente: notif.nombre || 'Pagador no identificado',
+      cliente: notif.nombre || 'Pago recibido BDV',
       telefono: '',
+      pagadorBanco: notif.nombre || '',
+      telefonoPagador: notif.telefono || '',
       ref: notif.referencia,
       monto: notif.monto,
       banco: 'Banco de Venezuela',
       tipoOperacion: notif.tipo,
       estado: 'pendiente',
       fecha: notif.fecha || new Date().toLocaleString(),
+      fechaBanco: notif.fecha,
       remitenteJid: null,
       imagen: null,
       origen: 'banco',
@@ -1070,14 +1115,13 @@ app.post('/webhook/sms-banco', function(req, res) {
     smsBancoBD.unshift(registro);
     console.log('[BANCO] Pago del banco registrado sin comprobante. Ref: ' + notif.referencia);
 
-    res.json({ status: 'success', conciliado: false, message: 'Pago del banco registrado. Vinculelo con el cliente.', referencia: notif.referencia, monto: notif.monto });
+    res.json({ status: 'success', conciliado: false, message: 'Pago del banco registrado. Vinculelo con el cliente.', referencia: notif.referencia, monto: notif.monto, pagador: notif.nombre, telefonoPagador: notif.telefono });
 
   } catch (error) {
     console.error('[BANCO] Error en webhook: ' + error.message);
     res.status(500).json({ status: 'error', message: error.message });
   }
 });
-
 app.get('/api/probar-notificacion', function(req, res) {
   const texto = req.query.texto || '';
   res.json(parsearNotificacionBDV(texto));
