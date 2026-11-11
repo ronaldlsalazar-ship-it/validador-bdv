@@ -1094,8 +1094,10 @@ app.post('/webhook/sms-banco', function(req, res) {
     if (typeof cuerpo === 'string') cuerpo = { texto: cuerpo };
     if (!cuerpo || typeof cuerpo !== 'object') cuerpo = {};
 
-    const tokenRecibido = cuerpo.token || req.query.token || req.headers['x-token'] || '';
-    if (tokenEsperado && tokenRecibido !== tokenEsperado) {
+     const tokenRecibido = cuerpo.token || req.query.token || req.headers['x-token'] || '';
+     console.log('[BANCO-DEBUG] Token requerido: ' + (tokenEsperado ? 'SI' : 'NO') + ' | Recibido: ' + (tokenRecibido || 'ninguno') + ' | Coincide: ' + (tokenRecibido === tokenEsperado));
+     if (tokenEsperado && tokenRecibido !== tokenEsperado) {
+    console.log('[BANCO] RECHAZADO por token. Body: ' + JSON.stringify(cuerpo).substring(0, 300));
       return res.status(401).json({ status: 'error', message: 'Token invalido' });
     }
 
