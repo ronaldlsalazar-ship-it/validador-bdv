@@ -20,9 +20,6 @@ app.use(express.static(__dirname));
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// ==========================================
-// CONFIGURACION PARA RAILWAY
-// ==========================================
 const authDir = process.env.AUTH_DIR || path.join(__dirname, 'sesion_whatsapp');
 console.log('Sesion WhatsApp guardada en: ' + authDir);
 console.log('Uploads en: ' + uploadDir);
@@ -38,9 +35,10 @@ let intentosConexion = 0;
 const MAX_INTENTOS = 5;
 const OCR_TIMEOUT_MS = 90000;
 
-// ==========================================
-// MAPA DE CODIGOS DE BANCO EN VENEZUELA
-// ==========================================
+// Mapa de clientes que estan en proceso de confirmacion
+// clave: numero de telefono, valor: { rutaImagen, nombreCliente, telefonoLimpio, remitente, timestamp }
+const pendientesConfirmacion = new Map();
+
 const CODIGOS_BANCO = {
   '0102': 'Banco de Venezuela',
   '0104': 'Banco Venezolano de Credito',
@@ -70,14 +68,11 @@ const CODIGOS_BANCO = {
 };
 const LISTA_BANCOS = Object.values(CODIGOS_BANCO);
 
-// ==========================================
-// UTILIDAD: LIMITAR TIEMPO DE UNA PROMESA
-// ==========================================
 function conTimeout(promesa, ms, etiqueta) {
   let temporizador;
   const limite = new Promise(function(resolve, reject) {
     temporizador = setTimeout(function() {
-      reject(new Error('Tiempo de espera agotado en ' + etiqueta));
+      reject(new Error('Tiempo agotado en ' + etiqueta));
     }, ms);
   });
   return Promise.race([promesa, limite]).finally(function() {
@@ -85,9 +80,6 @@ function conTimeout(promesa, ms, etiqueta) {
   });
 }
 
-// ==========================================
-// DETECCION DE BANCO POR CODIGO DE CUENTA
-// ==========================================
 function detectarBancoPorCodigoCuenta(texto) {
   if (!texto) return null;
   const cuentas = texto.match(/\b(0\d{3})\d{16}\b/g) || [];
@@ -103,9 +95,6 @@ function detectarBancoPorCodigoCuenta(texto) {
   return null;
 }
 
-// ==========================================
-// EXTRACCION DE REFERENCIA
-// ==========================================
 function extraerReferencia(texto) {
   if (!texto) return '';
   const limpio = texto.replace(/\s+/g, ' ').replace(/[|]/g, 'I');
@@ -149,9 +138,6 @@ function extraerReferencia(texto) {
   return '';
 }
 
-// ==========================================
-// NORMALIZACION DE MONTOS
-// ==========================================
 function normalizarMontoVE(str) {
   if (!str) return 0;
   let limpio = str.replace(/\s/g, '').replace(/\./g, '').replace(',', '.');
@@ -159,9 +145,6 @@ function normalizarMontoVE(str) {
   return isNaN(num) ? 0 : num;
 }
 
-// ==========================================
-// EXTRACCION DE MONTO
-// ==========================================
 function extraerMonto(texto) {
   if (!texto) return 0.00;
   const limpio = texto.replace(/\s+/g, ' ');
@@ -197,9 +180,6 @@ function extraerMonto(texto) {
   return 0.00;
 }
 
-// ==========================================
-// EXTRACCION DE FECHA
-// ==========================================
 function extraerFecha(texto) {
   if (!texto) return '';
   let match = texto.match(/(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4})/);
@@ -214,9 +194,6 @@ function extraerFecha(texto) {
   return '';
 }
 
-// ==========================================
-// EXTRACCION DE BANCO EMISOR
-// ==========================================
 function extraerBanco(texto) {
   if (!texto) return 'Por confirmar';
   const limpio = texto.toLowerCase();
@@ -262,9 +239,35 @@ function extraerBanco(texto) {
   return 'Por confirmar';
 }
 
-// ==========================================
-// PREPROCESAMIENTO DE IMAGEN
-// ==========================================
+// Detecta si el texto parece ser un comprobante de pago bancario
+function esComprobanteDePago(texto) {
+  if (!texto || texto.length < 20) return false;
+  const t = texto.toLowerCase();
+  const palabrasClave = [
+    'comprobante', 'pago movil', 'pago móvil', 'transferencia',
+    'referencia', 'numero de operacion', 'número de operación',
+    'numero de referencia', 'número de referencia',
+    'banco de venezuela', 'bdv', 'banesco', 'mercantil', 'provincial',
+    'bancamiga', 'banplus', 'bancaribe', 'banco exterior',
+    'monto', 'total', 'importe', 'bs.', 'bs ', 'bolivares', 'bolívares',
+    'fecha de transaccion', 'fecha de transacción',
+    'cuenta origen', 'cuenta destino', 'beneficiario',
+    'pago aprobado', 'transaccion exitosa', 'transacción exitosa',
+    'pago realizado', 'pago recibido', 'abono', 'deposito', 'depósito'
+  ];
+  let coincidencias = 0;
+  for (const palabra of palabrasClave) {
+    if (t.includes(palabra)) coincidencias++;
+  }
+  const tieneReferencia = /\b\d{6,15}\b/.test(texto);
+  const tieneMonto = /\d{1,3}[.,]\d{2}/.test(texto);
+  const tieneCodigoBanco = /\b0\d{3}\d{10,}\b/.test(texto.replace(/\s/g, ''));
+  if (coincidencias >= 2) return true;
+  if (coincidencias >= 1 && (tieneReferencia || tieneMonto)) return true;
+  if (tieneCodigoBanco && tieneMonto) return true;
+  return false;
+}
+
 async function preprocesarImagen(rutaOriginal) {
   const marca = Date.now();
   const rutaNormal = path.join(uploadDir, 'ocr_normal_' + marca + '.png');
@@ -272,21 +275,12 @@ async function preprocesarImagen(rutaOriginal) {
   try {
     await sharp(rutaOriginal)
       .resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: false })
-      .grayscale()
-      .normalize()
-      .sharpen({ sigma: 1.5 })
-      .threshold(128)
-      .png({ compressionLevel: 6 })
-      .toFile(rutaNormal);
+      .grayscale().normalize().sharpen({ sigma: 1.5 }).threshold(128)
+      .png({ compressionLevel: 6 }).toFile(rutaNormal);
     await sharp(rutaOriginal)
       .resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: false })
-      .negate()
-      .grayscale()
-      .normalize()
-      .sharpen({ sigma: 1.5 })
-      .threshold(128)
-      .png({ compressionLevel: 6 })
-      .toFile(rutaInvertida);
+      .negate().grayscale().normalize().sharpen({ sigma: 1.5 }).threshold(128)
+      .png({ compressionLevel: 6 }).toFile(rutaInvertida);
     return { normal: rutaNormal, invertida: rutaInvertida };
   } catch (err) {
     console.error('Error en preprocesamiento: ' + err.message);
@@ -294,9 +288,6 @@ async function preprocesarImagen(rutaOriginal) {
   }
 }
 
-// ==========================================
-// OCR
-// ==========================================
 async function procesarImagenOCR(rutaImagen) {
   let rutas = null;
   let worker = null;
@@ -319,7 +310,7 @@ async function procesarImagenOCR(rutaImagen) {
         console.error('[OCR] Fallo lectura invertida: ' + e.message);
       }
     }
-    console.log('[OCR] Proceso completado. Caracteres leidos: ' + (textoNormal.length + textoInvertido.length));
+    console.log('[OCR] Proceso completado. Caracteres: ' + (textoNormal.length + textoInvertido.length));
     return textoNormal + '\n' + textoInvertido;
   } catch (error) {
     console.error('[OCR] ERROR: ' + error.message);
@@ -339,9 +330,6 @@ async function procesarImagenOCR(rutaImagen) {
   }
 }
 
-// ==========================================
-// WHATSAPP - CONEXION
-// ==========================================
 async function iniciarWhatsApp(forceNew) {
   if (isConnecting && !forceNew) {
     console.log('Ya hay una conexion en proceso...');
@@ -413,7 +401,7 @@ async function iniciarWhatsApp(forceNew) {
         if (statusCode === DisconnectReason.loggedOut) {
           console.log('Sesion cerrada (loggedOut).');
           estadoConexion = 'error';
-          ultimoError = 'Sesion cerrada desde el telefono. Usa /api/restart-whatsapp';
+          ultimoError = 'Sesion cerrada desde el telefono.';
           ultimoQrGenerado = '';
           return;
         }
@@ -422,7 +410,7 @@ async function iniciarWhatsApp(forceNew) {
         if (intentosConexion > MAX_INTENTOS) {
           console.log('Demasiados intentos fallidos.');
           estadoConexion = 'error';
-          ultimoError = 'Demasiados intentos fallidos. Usa /api/restart-whatsapp';
+          ultimoError = 'Demasiados intentos fallidos.';
           return;
         }
         estadoConexion = 'reconectando';
@@ -457,6 +445,52 @@ async function iniciarWhatsApp(forceNew) {
       const esImagen = contenido.imageMessage;
       const textoPlano = contenido.conversation || (contenido.extendedTextMessage ? contenido.extendedTextMessage.text : null);
       console.log('De: ' + nombreCliente + ' | Imagen: ' + (!!esImagen));
+
+      // ---------- MANEJO DE CONFIRMACION PENDIENTE ----------
+      if (textoPlano && pendientesConfirmacion.has(telefonoLimpio)) {
+        const pendiente = pendientesConfirmacion.get(telefonoLimpio);
+        // Expira despues de 5 minutos
+        if (Date.now() - pendiente.timestamp > 300000) {
+          pendientesConfirmacion.delete(telefonoLimpio);
+          try { fs.unlinkSync(pendiente.rutaImagen); } catch (e) {}
+          await sockWhatsApp.sendMessage(remitente, { text: 'La confirmacion expiro. Si aun quieres registrarlo, envia la imagen de nuevo.' });
+          return;
+        }
+
+        const respuesta = textoPlano.trim().toLowerCase();
+        if (respuesta === 'si' || respuesta === 'sí' || respuesta === 's' || respuesta === 'yes' || respuesta === '1') {
+          // Registrar como pago pendiente manual
+          pagosBD.unshift({
+            id: Date.now(),
+            cliente: pendiente.nombreCliente,
+            telefono: '+' + pendiente.telefonoLimpio,
+            ref: 'PENDIENTE_CONFIRMACION',
+            monto: 0,
+            banco: 'Por confirmar',
+            estado: 'pendiente',
+            fecha: new Date().toLocaleString(),
+            remitenteJid: remitente,
+            imagen: path.basename(pendiente.rutaImagen),
+            requiereEdicionManual: true,
+            textoOCR: 'Imagen confirmada manualmente por el cliente'
+          });
+          pendientesConfirmacion.delete(telefonoLimpio);
+          await sockWhatsApp.sendMessage(remitente, {
+            text: 'Imagen registrada como pago pendiente.\nUn administrador completara los datos manualmente.'
+          });
+          return;
+        } else if (respuesta === 'no' || respuesta === 'n' || respuesta === 'cancelar' || respuesta === '0') {
+          pendientesConfirmacion.delete(telefonoLimpio);
+          try { fs.unlinkSync(pendiente.rutaImagen); } catch (e) {}
+          await sockWhatsApp.sendMessage(remitente, { text: 'Imagen descartada. No se registro ningun pago.' });
+          return;
+        } else {
+          await sockWhatsApp.sendMessage(remitente, {
+            text: 'Por favor responde SI para registrar o NO para descartar.'
+          });
+          return;
+        }
+      }
 
       // ---------- MENSAJE DE TEXTO ----------
       if (textoPlano && !esImagen) {
@@ -532,36 +566,61 @@ async function iniciarWhatsApp(forceNew) {
         const fechaComprobante = extraerFecha(textoOCR);
         const bancoDetectado = extraerBanco(textoOCR);
 
-        console.log('[WHATSAPP] Banco: ' + bancoDetectado + ' | Ref: ' + (ref || 'SIN_REF') + ' | Monto: ' + monto);
+        // FILTRO INTELIGENTE: verificar si parece comprobante de pago
+        const pareceComprobante = esComprobanteDePago(textoOCR);
+        const tieneDatosPago = ref || monto > 0;
 
-        // SIEMPRE se registra el pago, aunque el OCR falle
-        pagosBD.unshift({
-          id: Date.now(),
-          cliente: nombreCliente,
-          telefono: '+' + telefonoLimpio,
-          ref: ref || 'SIN_REF',
-          monto: monto,
-          banco: bancoDetectado,
-          estado: 'pendiente',
-          fecha: fechaComprobante || new Date().toLocaleString(),
-          remitenteJid: remitente,
-          imagen: nombreArchivo,
-          ocrFallido: !textoOCR,
-          textoOCR: (textoOCR || 'OCR sin resultado').substring(0, 600)
+        console.log('[WHATSAPP] Banco: ' + bancoDetectado + ' | Ref: ' + (ref || 'SIN_REF') + ' | Monto: ' + monto + ' | Parece comprobante: ' + pareceComprobante);
+
+        // CASO 1: Detecto datos de pago O parece comprobante -> registrar directamente
+        if (tieneDatosPago || pareceComprobante) {
+          pagosBD.unshift({
+            id: Date.now(),
+            cliente: nombreCliente,
+            telefono: '+' + telefonoLimpio,
+            ref: ref || 'SIN_REF',
+            monto: monto,
+            banco: bancoDetectado,
+            estado: 'pendiente',
+            fecha: fechaComprobante || new Date().toLocaleString(),
+            remitenteJid: remitente,
+            imagen: nombreArchivo,
+            ocrFallido: !textoOCR,
+            textoOCR: (textoOCR || 'OCR sin resultado').substring(0, 600)
+          });
+
+          try {
+            if (!textoOCR) {
+              await sockWhatsApp.sendMessage(remitente, {
+                text: 'Recibimos tu comprobante pero no pudimos leerlo automaticamente.\nYa lo registramos para revision manual.'
+              });
+            } else {
+              await sockWhatsApp.sendMessage(remitente, {
+                text: 'Imagen procesada.\n\nDatos:\n- Ref: ' + (ref || 'No detectada') + '\n- Monto: Bs. ' + monto.toFixed(2) + '\n- Banco: ' + bancoDetectado + '\n\nPronto validaremos.'
+              });
+            }
+          } catch (e) {
+            console.error('[WHATSAPP] Error enviando confirmacion: ' + e.message);
+          }
+          return;
+        }
+
+        // CASO 2: No detecta nada que parezca comprobante -> pedir confirmacion
+        console.log('[WHATSAPP] Imagen no parece comprobante. Pidiendo confirmacion a ' + telefonoLimpio);
+        pendientesConfirmacion.set(telefonoLimpio, {
+          rutaImagen: rutaCompleta,
+          nombreCliente: nombreCliente,
+          telefonoLimpio: telefonoLimpio,
+          remitente: remitente,
+          timestamp: Date.now()
         });
 
         try {
-          if (!textoOCR) {
-            await sockWhatsApp.sendMessage(remitente, {
-              text: 'Recibimos tu comprobante pero no pudimos leerlo automaticamente.\nYa lo registramos para revision manual.\n\nSi quieres, escribe:\nRef: 12345678 Monto: Bs. 150,00'
-            });
-          } else {
-            await sockWhatsApp.sendMessage(remitente, {
-              text: 'Imagen procesada.\n\nDatos:\n- Ref: ' + (ref || 'No detectada') + '\n- Monto: Bs. ' + monto.toFixed(2) + '\n- Banco: ' + bancoDetectado + '\n\nPronto validaremos.'
-            });
-          }
+          await sockWhatsApp.sendMessage(remitente, {
+            text: 'No detectamos datos de pago en esta imagen.\n\nParece que no es un comprobante bancario.\n\nResponde:\n*SI* - para registrarlo como pago pendiente (un admin lo completara)\n*NO* - para descartar la imagen\n\nTienes 5 minutos para responder.'
+          });
         } catch (e) {
-          console.error('[WHATSAPP] Error enviando confirmacion: ' + e.message);
+          console.error('[WHATSAPP] Error pidiendo confirmacion: ' + e.message);
         }
       }
     });
@@ -621,7 +680,8 @@ app.get('/api/status', function(req, res) {
     archivosSesion: fs.existsSync(authDir) ? fs.readdirSync(authDir).length : 0,
     uptime: process.uptime(),
     pagos: pagosBD.length,
-    sms: smsBancoBD.length
+    sms: smsBancoBD.length,
+    confirmacionesPendientes: pendientesConfirmacion.size
   });
 });
 
@@ -651,6 +711,26 @@ app.patch('/api/pagos/:id/estado', function(req, res) {
   pago.estado = estado;
   pago.fechaAprobacion = new Date().toLocaleString();
   res.json({ status: 'success', id: id, estado: estado });
+});
+
+// NUEVO: Eliminar pago
+app.delete('/api/pagos/:id', function(req, res) {
+  const id = parseInt(req.params.id);
+  const indice = pagosBD.findIndex(function(p) { return p.id === id; });
+  if (indice === -1) {
+    return res.status(404).json({ status: 'error', message: 'Pago no encontrado' });
+  }
+  const pagoEliminado = pagosBD[indice];
+  // Borrar imagen asociada si existe
+  if (pagoEliminado.imagen) {
+    const rutaImg = path.join(uploadDir, pagoEliminado.imagen);
+    if (fs.existsSync(rutaImg)) {
+      try { fs.unlinkSync(rutaImg); } catch (e) {}
+    }
+  }
+  pagosBD.splice(indice, 1);
+  console.log('Pago eliminado ID: ' + id);
+  res.json({ status: 'success', id: id });
 });
 
 app.get('/qr', function(req, res) {
@@ -713,9 +793,6 @@ app.get('/', function(req, res) {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// ==========================================
-// INICIAR SERVIDOR
-// ==========================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', function() {
   console.log('Servidor corriendo en puerto ' + PORT);
