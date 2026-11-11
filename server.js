@@ -733,6 +733,25 @@ app.delete('/api/pagos/:id', function(req, res) {
   res.json({ status: 'success', id: id });
 });
 
+// NUEVO: Editar referencia y/o monto de un pago
+app.patch('/api/pagos/:id/editar', function(req, res) {
+  const id = parseInt(req.params.id);
+  const pago = pagosBD.find(function(p) { return p.id === id; });
+  if (!pago) {
+    return res.status(404).json({ status: 'error', message: 'Pago no encontrado' });
+  }
+  if (req.body.ref !== undefined) pago.ref = req.body.ref;
+  if (req.body.monto !== undefined) pago.monto = parseFloat(req.body.monto) || 0;
+  if (req.body.cliente !== undefined) pago.cliente = req.body.cliente;
+  if (req.body.banco !== undefined) pago.banco = req.body.banco;
+  if (req.body.estado !== undefined) pago.estado = req.body.estado;
+  pago.fechaEdicion = new Date().toLocaleString();
+  if (pago.ref !== 'PENDIENTE_CONFIRMACION' && pago.ref !== 'SIN_REF') {
+    pago.requiereEdicionManual = false;
+  }
+  res.json({ status: 'success', id: id });
+});
+
 app.get('/qr', function(req, res) {
   res.sendFile(path.join(__dirname, 'qr.html'));
 });
