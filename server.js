@@ -15,6 +15,8 @@ const sharp = require('sharp');
 const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
+app.use(bodyParser.text({ type: 'text/plain', limit: '1mb' }));
 app.use(express.static(__dirname));
 
 const uploadDir = path.join(__dirname, 'uploads');
@@ -748,6 +750,111 @@ async function iniciarWhatsApp(forceNew) {
 iniciarWhatsApp();
 
 // ==========================================
+// PARSER DE NOTIFICACIONES BDV
+// ==========================================
+function parsearNotificacionBDV(texto) {
+  const r = {
+    valido: false,
+    tipo: 'desconocido',
+    nombre: '',
+    monto: 0,
+    referencia: '',
+    fecha: '',
+    motivo: ''
+  };
+
+  if (!texto || typeof texto !== 'string') {
+    r.motivo = 'Texto vacio';
+    return r;
+  }
+
+  const t = texto.replace(/\s+/g, ' ').trim();
+  const lower = t.toLowerCase();
+
+  const esRecibido = /recibiste|recibido|recibida|abono recibido|pago recibido/.test(lower);
+  if (!esRecibido) {
+    r.motivo = 'No es un aviso de pago recibido';
+    return r;
+  }
+
+  if (/pagomovil|pago movil/.test(lower)) {
+    r.tipo = 'pago_movil';
+  } else if (/transferencia/.test(lower)) {
+    r.tipo = 'transferencia';
+  } else if (/deposito/.test(lower)) {
+    r.tipo = 'deposito';
+  }
+
+  const mMonto = t.match(/Bs\.?\s*([\d.,]+)/i);
+  if (mMonto) {
+    let bruto = mMonto[1].replace(/\s/g, '');
+    if (bruto.indexOf(',') !== -1) {
+      bruto = bruto.replace(/\./g, '').replace(',', '.');
+    } else {
+      const partes = bruto.split('.');
+      if (partes.length > 1 && partes[partes.length - 1].length === 2) {
+        const dec = partes.pop();
+        bruto = partes.join('') + '.' + dec;
+      } else {
+        bruto = partes.join('');
+      }
+    }
+    const n = parseFloat(bruto);
+    if (!isNaN(n)) r.monto = Math.round(n * 100) / 100;
+  }
+
+  const mRef = t.match(/(?:numero|nro|no|num)\.?\s*(?:de\s*)?(?:operacion|referencia|control)\s*[:#]?\s*(\d{6,20})/i);
+  if (mRef) {
+    r.referencia = mRef[1];
+  } else {
+    const mRef2 = t.match(/\b(\d{10,20})\b/);
+    if (mRef2) r.referencia = mRef2[1];
+  }
+
+  const mNombre = t.match(/\bde\s+([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚáéíóúÑñ\s.]{3,60}?)\s+por\s+Bs/i);
+  if (mNombre) r.nombre = mNombre[1].trim().replace(/\s+/g, ' ');
+
+  const mFecha = t.match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{1,2}:\d{2})(?:\s*([APap]\.?[Mm]\.?))?/);
+  if (mFecha) {
+    r.fecha = mFecha[1] + '/' + mFecha[2] + '/' + mFecha[3] + ' ' + mFecha[4] + (mFecha[5] ? ' ' + mFecha[5].toUpperCase() : '');
+  }
+
+  if (!r.monto || !r.referencia) {
+    r.motivo = 'No se detecto monto o referencia';
+    return r;
+  }
+
+  r.valido = true;
+  r.motivo = 'Notificacion BDV valida';
+  return r;
+}
+
+function normalizarRef(ref) {
+  if (!ref) return '';
+  return String(ref).replace(/\D/g, '').replace(/^0+/, '');
+}
+
+function buscarPagoPorNotificacion(notif) {
+  const refN = normalizarRef(notif.referencia);
+  let i;
+  for (i = 0; i < pagosBD.length; i++) {
+    const p = pagosBD[i];
+    if (p.estado === 'aprobado') continue;
+    const pN = normalizarRef(p.ref);
+    if (!pN || !refN) continue;
+    if (pN === refN) return { pago: p, criterio: 'referencia exacta' };
+    if (pN.length >= 8 && refN.length >= 8 && pN.slice(-8) === refN.slice(-8)) {
+      return { pago: p, criterio: 'ultimos 8 digitos' };
+    }
+  }
+  const candidatos = pagosBD.filter(function(p) {
+    return p.estado !== 'aprobado' && Math.abs((parseFloat(p.monto) || 0) - notif.monto) < 0.01;
+  });
+  if (candidatos.length === 1) return { pago: candidatos[0], criterio: 'monto exacto' };
+  return null;
+}
+
+// ==========================================
 // ENDPOINTS
 // ==========================================
 app.get('/api/bancos', function(req, res) {
@@ -864,26 +971,116 @@ app.get('/qr', function(req, res) {
 
 app.post('/webhook/sms-banco', function(req, res) {
   try {
-    const texto = req.body.texto;
-    smsBancoBD.unshift({ id: Date.now(), texto: texto, fecha: new Date().toLocaleString() });
-    const ref = extraerReferencia(texto);
-    const monto = extraerMonto(texto);
-    if (!ref || monto === 0) {
-      return res.json({ status: 'info', refExtraida: ref, montoExtraido: monto });
+    const tokenEsperado = process.env.WEBHOOK_TOKEN || '';
+    let cuerpo = req.body;
+    if (typeof cuerpo === 'string') {
+      cuerpo = { texto: cuerpo };
     }
-    const pagoCoincidente = pagosBD.find(function(p) {
-      return p.estado === 'pendiente' && (p.ref === ref || p.ref === 'PENDIENTE_' + ref || p.ref === 'SIN_REF');
+    if (!cuerpo) cuerpo = {};
+
+    const tokenRecibido = cuerpo.token || req.query.token || req.headers['x-token'] || '';
+    if (tokenEsperado && tokenRecibido !== tokenEsperado) {
+      return res.status(401).json({ status: 'error', message: 'Token invalido' });
+    }
+
+    let texto = cuerpo.texto || cuerpo.text || cuerpo.message || cuerpo.sms || cuerpo.body || cuerpo.content || cuerpo.notificacion || '';
+    const titulo = cuerpo.titulo || cuerpo.title || '';
+    if (titulo && texto.indexOf(titulo) === -1) {
+      texto = titulo + ' ' + texto;
+    }
+    texto = String(texto).trim();
+
+    if (!texto) {
+      return res.status(400).json({ status: 'error', message: 'No se recibio texto' });
+    }
+
+    const notif = parsearNotificacionBDV(texto);
+    console.log('[BANCO] Tipo: ' + notif.tipo + ' | Monto: ' + notif.monto + ' | Ref: ' + notif.referencia + ' | Valido: ' + notif.valido);
+
+    const registro = {
+      id: Date.now(),
+      texto: texto,
+      fecha: new Date().toLocaleString(),
+      fechaBanco: notif.fecha,
+      tipo: notif.tipo,
+      pagador: notif.nombre,
+      monto: notif.monto,
+      referencia: notif.referencia,
+      procesado: notif.valido,
+      motivo: notif.motivo
+    };
+
+    if (!notif.valido) {
+      smsBancoBD.unshift(registro);
+      return res.json({ status: 'info', message: notif.motivo });
+    }
+
+    const yaExiste = smsBancoBD.find(function(s) {
+      return s.referencia && normalizarRef(s.referencia) === normalizarRef(notif.referencia);
     });
-    if (pagoCoincidente) {
-      pagoCoincidente.estado = 'aprobado';
-      pagoCoincidente.monto = monto;
-      pagoCoincidente.ref = ref;
-      pagoCoincidente.fechaAprobacion = new Date().toLocaleString();
+    if (yaExiste) {
+      return res.json({ status: 'duplicado', referencia: notif.referencia, message: 'Esta operacion ya fue registrada' });
     }
-    res.json({ status: 'success', referencia: ref, monto: monto, cruzado: !!pagoCoincidente });
+
+    const hallado = buscarPagoPorNotificacion(notif);
+    if (hallado) {
+      const pago = hallado.pago;
+      pago.estado = 'aprobado';
+      pago.monto = notif.monto;
+      pago.ref = notif.referencia;
+      pago.banco = 'Banco de Venezuela';
+      pago.tipoOperacion = notif.tipo;
+      pago.pagadorBanco = notif.nombre;
+      pago.confirmadoPorBanco = true;
+      pago.criterioConciliacion = hallado.criterio;
+      pago.fechaAprobacion = new Date().toLocaleString();
+      registro.pagoId = pago.id;
+      registro.conciliado = true;
+      smsBancoBD.unshift(registro);
+      console.log('[BANCO] Pago ' + pago.id + ' aprobado por ' + hallado.criterio);
+
+      if (pago.remitenteJid && sockWhatsApp) {
+        sockWhatsApp.sendMessage(pago.remitenteJid, {
+          text: 'Pago CONFIRMADO por el banco.\n\nMonto: Bs. ' + notif.monto.toFixed(2) + '\nReferencia: ' + notif.referencia + '\n\nGracias por su pago.'
+        }).catch(function(e) {
+          console.error('[BANCO] Error notificando cliente: ' + e.message);
+        });
+      }
+
+      return res.json({ status: 'success', conciliado: true, criterio: hallado.criterio, pagoId: pago.id, referencia: notif.referencia, monto: notif.monto });
+    }
+
+    pagosBD.unshift({
+      id: Date.now() + 1,
+      cliente: notif.nombre || 'Pagador no identificado',
+      telefono: '',
+      ref: notif.referencia,
+      monto: notif.monto,
+      banco: 'Banco de Venezuela',
+      tipoOperacion: notif.tipo,
+      estado: 'pendiente',
+      fecha: notif.fecha || new Date().toLocaleString(),
+      remitenteJid: null,
+      imagen: null,
+      origen: 'banco',
+      sinComprobante: true,
+      confirmadoPorBanco: true,
+      textoOCR: 'Pago recibido segun notificacion BDV. Falta vincular con el cliente.'
+    });
+    smsBancoBD.unshift(registro);
+    console.log('[BANCO] Pago del banco registrado sin comprobante. Ref: ' + notif.referencia);
+
+    res.json({ status: 'success', conciliado: false, message: 'Pago del banco registrado. Vinculelo con el cliente.', referencia: notif.referencia, monto: notif.monto });
+
   } catch (error) {
+    console.error('[BANCO] Error en webhook: ' + error.message);
     res.status(500).json({ status: 'error', message: error.message });
   }
+});
+
+app.get('/api/probar-notificacion', function(req, res) {
+  const texto = req.query.texto || '';
+  res.json(parsearNotificacionBDV(texto));
 });
 
 app.get('/api/pagos', function(req, res) {
