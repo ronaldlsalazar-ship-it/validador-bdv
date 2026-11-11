@@ -35,10 +35,6 @@ let intentosConexion = 0;
 const MAX_INTENTOS = 5;
 const OCR_TIMEOUT_MS = 90000;
 
-// Mapa de clientes que estan en proceso de confirmacion
-// clave: numero de telefono, valor: { rutaImagen, nombreCliente, telefonoLimpio, remitente, timestamp }
-const pendientesConfirmacion = new Map();
-
 const CODIGOS_BANCO = {
   '0102': 'Banco de Venezuela',
   '0104': 'Banco Venezolano de Credito',
@@ -78,6 +74,210 @@ function conTimeout(promesa, ms, etiqueta) {
   return Promise.race([promesa, limite]).finally(function() {
     clearTimeout(temporizador);
   });
+}
+
+// ==========================================
+// FILTRO: DETECTAR SI ES COMPROBANTE BANCARIO
+// ==========================================
+function analizarComprobante(texto) {
+  const resultado = {
+    valido: false,
+    motivo: '',
+    puntos: 0,
+    tipo: 'desconocido',
+    anclasFuertes: [],
+    anclasDebiles: [],
+    senalesDocumento: []
+  };
+
+  if (!texto || texto.replace(/\s/g, '').length < 15) {
+    resultado.motivo = 'La imagen no tiene texto legible suficiente';
+    return resultado;
+  }
+
+  const quitarAcentos = function(s) {
+    return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  };
+
+  const base = quitarAcentos(texto.toLowerCase());
+  const lineas = base.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l.length > 0; });
+
+  // ==========================================
+  // 1) EXCLUIR LINEAS DE CONCEPTO / DESCRIPCION
+  //    Ahi el cliente escribe "pago de factura",
+  //    "pago de orden", etc. NO debe rechazar.
+  // ==========================================
+  const etiquetaConcepto = /^(concepto|descripcion|motivo|observacion|observaciones|nota|comentario|detalle|asunto)\b/;
+  const lineasDocumento = [];
+  let saltarSiguiente = false;
+  for (let i = 0; i < lineas.length; i++) {
+    const linea = lineas[i];
+    if (etiquetaConcepto.test(linea)) {
+      const resto = linea.replace(etiquetaConcepto, '').replace(/[:\-\s]/g, '');
+      if (resto.length === 0) saltarSiguiente = true;
+      continue;
+    }
+    if (saltarSiguiente) {
+      saltarSiguiente = false;
+      continue;
+    }
+    lineasDocumento.push(linea);
+  }
+
+  const doc = lineasDocumento.join('\n');
+  const plano = doc.replace(/\s+/g, ' ');
+  const compacto = doc.replace(/\s/g, '');
+
+  // ==========================================
+  // 2) ANCLAS FUERTES: prueban que es un
+  //    comprobante de operacion bancaria
+  // ==========================================
+  const listaFuertes = [
+    [/\bpago\s*movil\b/, 'pago movil'],
+    [/\bcomprobante\b/, 'comprobante'],
+    [/\b(?:nro|no|num|numero)\.?\s*(?:de\s*)?(?:referencia|operacion|control)\b/, 'nro referencia/operacion'],
+    [/\breferencia\s*[:#]?\s*\d{6,}/, 'referencia con numero'],
+    [/\b(?:operacion|transaccion|pago|transferencia|envio)\s*(?:exitos[oa]|aprobad[oa]|realizad[oa]|procesad[oa]|enviad[oa]|recibid[oa]|efectuad[oa])\b/, 'operacion exitosa'],
+    [/\b(?:exitos[oa]|aprobad[oa])\s*!/, 'estado exitoso'],
+    [/\bbdv\s*(?:en\s*linea|movil|app)\b/, 'BDV en linea'],
+    [/\bpago\s*bdv\b/, 'Pago BDV'],
+    [/\bbanesco\s*(?:movil|en\s*linea)\b/, 'Banesco movil'],
+    [/\bprovipay\b/, 'Provipay'],
+    [/\btpago\b/, 'Tpago'],
+    [/\bmercantil\s*(?:en\s*linea|movil)\b/, 'Mercantil en linea'],
+    [/\bbancamiga\s*(?:movil|app)\b/, 'Bancamiga movil'],
+    [/\bbanplus\s*(?:movil|app)\b/, 'Banplus movil'],
+    [/\brecibo\s*de\s*(?:pago|transferencia)\b/, 'recibo de pago'],
+    [/\b(?:cuenta|telefono)\s*(?:origen|destino)\b/, 'cuenta/telefono origen-destino'],
+    [/\bbeneficiario\b/, 'beneficiario']
+  ];
+  for (const par of listaFuertes) {
+    if (par[0].test(plano)) resultado.anclasFuertes.push(par[1]);
+  }
+
+  // ==========================================
+  // 3) ANCLAS DEBILES: apoyan pero no bastan
+  // ==========================================
+  const listaDebiles = [
+    [/\btransferencia\b/, 'transferencia'],
+    [/\breferencia\b/, 'referencia'],
+    [/\bbanco\b/, 'palabra banco'],
+    [/\bbdv\b/, 'bdv'],
+    [/\bbanesco\b/, 'banesco'],
+    [/\bmercantil\b/, 'mercantil'],
+    [/\bprovincial\b/, 'provincial'],
+    [/\bbancamiga\b/, 'bancamiga'],
+    [/\bbanplus\b/, 'banplus'],
+    [/\bbancaribe\b/, 'bancaribe'],
+    [/\bbancrecer\b/, 'bancrecer'],
+    [/\bsofitasa\b/, 'sofitasa'],
+    [/\bbangente\b/, 'bangente'],
+    [/\btesoro\b/, 'tesoro'],
+    [/\bexterior\b/, 'exterior'],
+    [/\bcaroni\b/, 'caroni'],
+    [/\bplaza\b/, 'plaza'],
+    [/\bactivo\b/, 'activo'],
+    [/\bmi\s*banco\b/, 'mi banco'],
+    [/\bnacional\s*de\s*credito\b/, 'bnc'],
+    [/\bfondo\s*comun\b/, 'fondo comun'],
+    [/\bmonto\b/, 'monto'],
+    [/\bbs\.?\b/, 'bs'],
+    [/\bbolivares\b/, 'bolivares'],
+    [/\babono\b/, 'abono'],
+    [/\bdeposito\b/, 'deposito'],
+    [/\bcedula\b/, 'cedula'],
+    [/\bfecha\s*(?:de\s*)?(?:operacion|transaccion|pago)\b/, 'fecha de operacion']
+  ];
+  for (const par of listaDebiles) {
+    if (par[0].test(plano)) resultado.anclasDebiles.push(par[1]);
+  }
+
+  // ==========================================
+  // 4) DATOS DE PAGO
+  // ==========================================
+  const tieneReferencia = /\b\d{6,15}\b/.test(plano);
+  const tieneMonto = /\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\b/.test(plano);
+  const tieneCuenta = /\b0\d{19}\b/.test(compacto);
+  const tieneTelefono = /\b0(?:412|414|416|424|426|212)\d{7}\b/.test(compacto);
+  const tieneDatosPago = tieneReferencia || tieneMonto;
+
+  // ==========================================
+  // 5) ESTRUCTURA DE FACTURA / ORDEN
+  //    (solo en lineas que NO son concepto)
+  // ==========================================
+  const senales = [];
+  if (/\bsub\s*total\b/.test(plano)) senales.push('subtotal');
+  if (/\biva\b/.test(plano) || /\bi\.v\.a\b/.test(plano)) senales.push('iva');
+  if (/\b(?:factura|proforma|presupuesto|cotizacion)\s*(?:n|no|nro|numero|#|:)/.test(plano)) senales.push('factura nro');
+  if (/^\s*(factura|presupuesto|cotizacion|proforma)\s*$/m.test(doc)) senales.push('titulo factura');
+  if (/\borden\s*(?:de\s*)?(?:servicio|compra|trabajo|pedido)\b/.test(plano)) senales.push('orden de servicio');
+  if (/\bnota\s*de\s*(?:entrega|pedido)\b/.test(plano)) senales.push('nota de entrega');
+  if (/\btotal\s*a\s*pagar\b/.test(plano)) senales.push('total a pagar');
+  if (/\bsaldo\s*(?:pendiente|deudor|anterior)\b/.test(plano)) senales.push('saldo pendiente');
+  if (/\bcondiciones\s*de\s*pago\b/.test(plano)) senales.push('condiciones de pago');
+  if (/\bfecha\s*de\s*(?:emision|vencimiento)\b/.test(plano)) senales.push('fecha emision');
+  if (/\brif\s*[:\-]?\s*[jvgpe]\s*-?\s*\d/.test(plano)) senales.push('rif emisor');
+  if (/\bcant(?:idad)?\b/.test(plano) && /\b(?:p\.?\s*unit|precio\s*unit|unitario|importe)\b/.test(plano)) senales.push('tabla cantidad/precio');
+  if (/\bdescripcion\b/.test(plano) && /\b(?:unidad|medida|sku|codigo\s*producto)\b/.test(plano)) senales.push('tabla productos');
+  resultado.senalesDocumento = senales;
+
+  const fuertes = resultado.anclasFuertes.length;
+  const debiles = resultado.anclasDebiles.length;
+  resultado.puntos = (fuertes * 3) + debiles + (tieneReferencia ? 2 : 0) + (tieneMonto ? 2 : 0) + (tieneCuenta ? 3 : 0) + (tieneTelefono ? 1 : 0);
+
+  // Tipo de operacion
+  if (/\bpago\s*movil\b/.test(plano) || /\bprovipay\b/.test(plano) || /\btpago\b/.test(plano)) {
+    resultado.tipo = 'pago_movil';
+  } else if (/\btransferencia\b/.test(plano)) {
+    resultado.tipo = 'transferencia';
+  } else if (/\bdeposito\b/.test(plano)) {
+    resultado.tipo = 'deposito';
+  }
+
+  // ==========================================
+  // REGLA A: ancla fuerte + datos -> ACEPTA
+  // (aunque el concepto diga "pago de factura")
+  // ==========================================
+  if (fuertes >= 1 && tieneDatosPago) {
+    resultado.valido = true;
+    resultado.motivo = 'Comprobante bancario verificado (' + resultado.anclasFuertes.slice(0, 3).join(', ') + ')';
+    return resultado;
+  }
+
+  // ==========================================
+  // REGLA B: estructura de factura sin ancla
+  // fuerte -> RECHAZA
+  // ==========================================
+  if (senales.length >= 2 && fuertes === 0) {
+    resultado.valido = false;
+    resultado.motivo = 'Parece factura u orden de servicio (' + senales.slice(0, 3).join(', ') + ')';
+    return resultado;
+  }
+
+  // ==========================================
+  // REGLA C: capture bancario simple
+  // (banco + monto/referencia, sin estructura
+  // de factura y sin palabra comprobante)
+  // ==========================================
+  const tieneEntidad = debiles >= 1 && (/\bbanco\b/.test(plano) || /\bbdv\b/.test(plano) || /\bbanesco\b/.test(plano) || /\bmercantil\b/.test(plano) || /\bprovincial\b/.test(plano) || /\bbancamiga\b/.test(plano) || /\bbanplus\b/.test(plano) || /\bbancaribe\b/.test(plano) || tieneCuenta);
+  if (tieneEntidad && tieneDatosPago && senales.length === 0) {
+    resultado.valido = true;
+    resultado.motivo = 'Comprobante bancario aceptado por entidad + datos de pago';
+    return resultado;
+  }
+
+  // ==========================================
+  // REGLA D: no hay evidencia suficiente
+  // ==========================================
+  if (!tieneDatosPago) {
+    resultado.motivo = 'No se detecto referencia ni monto de pago';
+  } else if (senales.length >= 1 && fuertes === 0) {
+    resultado.motivo = 'Documento no bancario (' + senales[0] + ') sin datos de operacion bancaria';
+  } else {
+    resultado.motivo = 'No se identifico una operacion bancaria (pago movil, transferencia o comprobante)';
+  }
+  resultado.valido = false;
+  return resultado;
 }
 
 function detectarBancoPorCodigoCuenta(texto) {
@@ -237,35 +437,6 @@ function extraerBanco(texto) {
     }
   }
   return 'Por confirmar';
-}
-
-// Detecta si el texto parece ser un comprobante de pago bancario
-function esComprobanteDePago(texto) {
-  if (!texto || texto.length < 20) return false;
-  const t = texto.toLowerCase();
-  const palabrasClave = [
-    'comprobante', 'pago movil', 'pago móvil', 'transferencia',
-    'referencia', 'numero de operacion', 'número de operación',
-    'numero de referencia', 'número de referencia',
-    'banco de venezuela', 'bdv', 'banesco', 'mercantil', 'provincial',
-    'bancamiga', 'banplus', 'bancaribe', 'banco exterior',
-    'monto', 'total', 'importe', 'bs.', 'bs ', 'bolivares', 'bolívares',
-    'fecha de transaccion', 'fecha de transacción',
-    'cuenta origen', 'cuenta destino', 'beneficiario',
-    'pago aprobado', 'transaccion exitosa', 'transacción exitosa',
-    'pago realizado', 'pago recibido', 'abono', 'deposito', 'depósito'
-  ];
-  let coincidencias = 0;
-  for (const palabra of palabrasClave) {
-    if (t.includes(palabra)) coincidencias++;
-  }
-  const tieneReferencia = /\b\d{6,15}\b/.test(texto);
-  const tieneMonto = /\d{1,3}[.,]\d{2}/.test(texto);
-  const tieneCodigoBanco = /\b0\d{3}\d{10,}\b/.test(texto.replace(/\s/g, ''));
-  if (coincidencias >= 2) return true;
-  if (coincidencias >= 1 && (tieneReferencia || tieneMonto)) return true;
-  if (tieneCodigoBanco && tieneMonto) return true;
-  return false;
 }
 
 async function preprocesarImagen(rutaOriginal) {
@@ -446,52 +617,6 @@ async function iniciarWhatsApp(forceNew) {
       const textoPlano = contenido.conversation || (contenido.extendedTextMessage ? contenido.extendedTextMessage.text : null);
       console.log('De: ' + nombreCliente + ' | Imagen: ' + (!!esImagen));
 
-      // ---------- MANEJO DE CONFIRMACION PENDIENTE ----------
-      if (textoPlano && pendientesConfirmacion.has(telefonoLimpio)) {
-        const pendiente = pendientesConfirmacion.get(telefonoLimpio);
-        // Expira despues de 5 minutos
-        if (Date.now() - pendiente.timestamp > 300000) {
-          pendientesConfirmacion.delete(telefonoLimpio);
-          try { fs.unlinkSync(pendiente.rutaImagen); } catch (e) {}
-          await sockWhatsApp.sendMessage(remitente, { text: 'La confirmacion expiro. Si aun quieres registrarlo, envia la imagen de nuevo.' });
-          return;
-        }
-
-        const respuesta = textoPlano.trim().toLowerCase();
-        if (respuesta === 'si' || respuesta === 'sí' || respuesta === 's' || respuesta === 'yes' || respuesta === '1') {
-          // Registrar como pago pendiente manual
-          pagosBD.unshift({
-            id: Date.now(),
-            cliente: pendiente.nombreCliente,
-            telefono: '+' + pendiente.telefonoLimpio,
-            ref: 'PENDIENTE_CONFIRMACION',
-            monto: 0,
-            banco: 'Por confirmar',
-            estado: 'pendiente',
-            fecha: new Date().toLocaleString(),
-            remitenteJid: remitente,
-            imagen: path.basename(pendiente.rutaImagen),
-            requiereEdicionManual: true,
-            textoOCR: 'Imagen confirmada manualmente por el cliente'
-          });
-          pendientesConfirmacion.delete(telefonoLimpio);
-          await sockWhatsApp.sendMessage(remitente, {
-            text: 'Imagen registrada como pago pendiente.\nUn administrador completara los datos manualmente.'
-          });
-          return;
-        } else if (respuesta === 'no' || respuesta === 'n' || respuesta === 'cancelar' || respuesta === '0') {
-          pendientesConfirmacion.delete(telefonoLimpio);
-          try { fs.unlinkSync(pendiente.rutaImagen); } catch (e) {}
-          await sockWhatsApp.sendMessage(remitente, { text: 'Imagen descartada. No se registro ningun pago.' });
-          return;
-        } else {
-          await sockWhatsApp.sendMessage(remitente, {
-            text: 'Por favor responde SI para registrar o NO para descartar.'
-          });
-          return;
-        }
-      }
-
       // ---------- MENSAJE DE TEXTO ----------
       if (textoPlano && !esImagen) {
         const ref = extraerReferencia(textoPlano);
@@ -561,66 +686,52 @@ async function iniciarWhatsApp(forceNew) {
           textoOCR = '';
         }
 
+        // ==========================================
+        // FILTRO: SOLO COMPROBANTES BANCARIOS
+        // ==========================================
+        const analisis = analizarComprobante(textoOCR);
+        console.log('[FILTRO] Puntos: ' + analisis.puntos + ' | Valido: ' + analisis.valido + ' | Motivo: ' + analisis.motivo);
+
+        if (!analisis.valido) {
+          // Borrar la imagen porque no es un comprobante
+          try { fs.unlinkSync(rutaCompleta); } catch (e) {}
+          console.log('[FILTRO] Imagen RECHAZADA y eliminada: ' + nombreArchivo);
+          try {
+            await sockWhatsApp.sendMessage(remitente, {
+              text: 'Esta imagen NO es un comprobante de pago bancario.\n\nMotivo: ' + analisis.motivo + '\n\nSolo aceptamos capturas de:\n- Pago Movil\n- Transferencia bancaria\n- Deposito\n\nNo aceptamos facturas, ordenes de servicio, presupuestos ni fotos de productos.\n\nSi crees que es un error, envia los datos por texto:\nRef: 12345678 Monto: Bs. 150,00'
+            });
+          } catch (e) {}
+          return;
+        }
+
         const ref = extraerReferencia(textoOCR);
         const monto = extraerMonto(textoOCR);
         const fechaComprobante = extraerFecha(textoOCR);
         const bancoDetectado = extraerBanco(textoOCR);
 
-        // FILTRO INTELIGENTE: verificar si parece comprobante de pago
-        const pareceComprobante = esComprobanteDePago(textoOCR);
-        const tieneDatosPago = ref || monto > 0;
+        console.log('[WHATSAPP] Banco: ' + bancoDetectado + ' | Ref: ' + (ref || 'SIN_REF') + ' | Monto: ' + monto);
 
-        console.log('[WHATSAPP] Banco: ' + bancoDetectado + ' | Ref: ' + (ref || 'SIN_REF') + ' | Monto: ' + monto + ' | Parece comprobante: ' + pareceComprobante);
-
-        // CASO 1: Detecto datos de pago O parece comprobante -> registrar directamente
-        if (tieneDatosPago || pareceComprobante) {
-          pagosBD.unshift({
-            id: Date.now(),
-            cliente: nombreCliente,
-            telefono: '+' + telefonoLimpio,
-            ref: ref || 'SIN_REF',
-            monto: monto,
-            banco: bancoDetectado,
-            estado: 'pendiente',
-            fecha: fechaComprobante || new Date().toLocaleString(),
-            remitenteJid: remitente,
-            imagen: nombreArchivo,
-            ocrFallido: !textoOCR,
-            textoOCR: (textoOCR || 'OCR sin resultado').substring(0, 600)
-          });
-
-          try {
-            if (!textoOCR) {
-              await sockWhatsApp.sendMessage(remitente, {
-                text: 'Recibimos tu comprobante pero no pudimos leerlo automaticamente.\nYa lo registramos para revision manual.'
-              });
-            } else {
-              await sockWhatsApp.sendMessage(remitente, {
-                text: 'Imagen procesada.\n\nDatos:\n- Ref: ' + (ref || 'No detectada') + '\n- Monto: Bs. ' + monto.toFixed(2) + '\n- Banco: ' + bancoDetectado + '\n\nPronto validaremos.'
-              });
-            }
-          } catch (e) {
-            console.error('[WHATSAPP] Error enviando confirmacion: ' + e.message);
-          }
-          return;
-        }
-
-        // CASO 2: No detecta nada que parezca comprobante -> pedir confirmacion
-        console.log('[WHATSAPP] Imagen no parece comprobante. Pidiendo confirmacion a ' + telefonoLimpio);
-        pendientesConfirmacion.set(telefonoLimpio, {
-          rutaImagen: rutaCompleta,
-          nombreCliente: nombreCliente,
-          telefonoLimpio: telefonoLimpio,
-          remitente: remitente,
-          timestamp: Date.now()
+        pagosBD.unshift({
+          id: Date.now(),
+          cliente: nombreCliente,
+          telefono: '+' + telefonoLimpio,
+          ref: ref || 'SIN_REF',
+          monto: monto,
+          banco: bancoDetectado,
+          estado: 'pendiente',
+          fecha: fechaComprobante || new Date().toLocaleString(),
+          remitenteJid: remitente,
+          imagen: nombreArchivo,
+          puntuacionComprobante: analisis.puntos,
+          textoOCR: (textoOCR || 'OCR sin resultado').substring(0, 600)
         });
 
         try {
           await sockWhatsApp.sendMessage(remitente, {
-            text: 'No detectamos datos de pago en esta imagen.\n\nParece que no es un comprobante bancario.\n\nResponde:\n*SI* - para registrarlo como pago pendiente (un admin lo completara)\n*NO* - para descartar la imagen\n\nTienes 5 minutos para responder.'
+            text: 'Comprobante procesado.\n\nDatos:\n- Ref: ' + (ref || 'No detectada') + '\n- Monto: Bs. ' + monto.toFixed(2) + '\n- Banco: ' + bancoDetectado + '\n\nPronto validaremos.'
           });
         } catch (e) {
-          console.error('[WHATSAPP] Error pidiendo confirmacion: ' + e.message);
+          console.error('[WHATSAPP] Error enviando confirmacion: ' + e.message);
         }
       }
     });
@@ -680,8 +791,7 @@ app.get('/api/status', function(req, res) {
     archivosSesion: fs.existsSync(authDir) ? fs.readdirSync(authDir).length : 0,
     uptime: process.uptime(),
     pagos: pagosBD.length,
-    sms: smsBancoBD.length,
-    confirmacionesPendientes: pendientesConfirmacion.size
+    sms: smsBancoBD.length
   });
 });
 
@@ -713,27 +823,7 @@ app.patch('/api/pagos/:id/estado', function(req, res) {
   res.json({ status: 'success', id: id, estado: estado });
 });
 
-// NUEVO: Eliminar pago
-app.delete('/api/pagos/:id', function(req, res) {
-  const id = parseInt(req.params.id);
-  const indice = pagosBD.findIndex(function(p) { return p.id === id; });
-  if (indice === -1) {
-    return res.status(404).json({ status: 'error', message: 'Pago no encontrado' });
-  }
-  const pagoEliminado = pagosBD[indice];
-  // Borrar imagen asociada si existe
-  if (pagoEliminado.imagen) {
-    const rutaImg = path.join(uploadDir, pagoEliminado.imagen);
-    if (fs.existsSync(rutaImg)) {
-      try { fs.unlinkSync(rutaImg); } catch (e) {}
-    }
-  }
-  pagosBD.splice(indice, 1);
-  console.log('Pago eliminado ID: ' + id);
-  res.json({ status: 'success', id: id });
-});
-
-// NUEVO: Editar referencia y/o monto de un pago
+// NUEVO: Editar referencia y/o monto
 app.patch('/api/pagos/:id/editar', function(req, res) {
   const id = parseInt(req.params.id);
   const pago = pagosBD.find(function(p) { return p.id === id; });
@@ -746,9 +836,25 @@ app.patch('/api/pagos/:id/editar', function(req, res) {
   if (req.body.banco !== undefined) pago.banco = req.body.banco;
   if (req.body.estado !== undefined) pago.estado = req.body.estado;
   pago.fechaEdicion = new Date().toLocaleString();
-  if (pago.ref !== 'PENDIENTE_CONFIRMACION' && pago.ref !== 'SIN_REF') {
-    pago.requiereEdicionManual = false;
+  res.json({ status: 'success', id: id });
+});
+
+// Eliminar pago
+app.delete('/api/pagos/:id', function(req, res) {
+  const id = parseInt(req.params.id);
+  const indice = pagosBD.findIndex(function(p) { return p.id === id; });
+  if (indice === -1) {
+    return res.status(404).json({ status: 'error', message: 'Pago no encontrado' });
   }
+  const pagoEliminado = pagosBD[indice];
+  if (pagoEliminado.imagen) {
+    const rutaImg = path.join(uploadDir, pagoEliminado.imagen);
+    if (fs.existsSync(rutaImg)) {
+      try { fs.unlinkSync(rutaImg); } catch (e) {}
+    }
+  }
+  pagosBD.splice(indice, 1);
+  console.log('Pago eliminado ID: ' + id);
   res.json({ status: 'success', id: id });
 });
 
