@@ -23,8 +23,13 @@ const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const authDir = process.env.AUTH_DIR || path.join(__dirname, 'sesion_whatsapp');
+if (!fs.existsSync(authDir)) fs.mkdirSync(authDir, { recursive: true });
+const datosDir = process.env.DATA_DIR || authDir;
+const archivoDatos = path.join(datosDir, 'datos_validador.json');
+
 console.log('Sesion WhatsApp guardada en: ' + authDir);
 console.log('Uploads en: ' + uploadDir);
+console.log('Datos persistentes en: ' + archivoDatos);
 
 let pagosBD = [];
 let smsBancoBD = [];
@@ -37,6 +42,67 @@ let intentosConexion = 0;
 const MAX_INTENTOS = 5;
 const OCR_TIMEOUT_MS = 90000;
 
+// ==========================================
+// PERSISTENCIA DE DATOS
+// ==========================================
+function cargarDatos() {
+  try {
+    if (fs.existsSync(archivoDatos)) {
+      const raw = fs.readFileSync(archivoDatos, 'utf8');
+      const data = JSON.parse(raw);
+      if (Array.isArray(data.pagos)) pagosBD = data.pagos;
+      if (Array.isArray(data.sms)) smsBancoBD = data.sms;
+      console.log('[DATOS] Cargados ' + pagosBD.length + ' pagos y ' + smsBancoBD.length + ' avisos');
+    } else {
+      console.log('[DATOS] Sin archivo previo, iniciando vacio');
+    }
+  } catch (e) {
+    console.error('[DATOS] Error cargando: ' + e.message);
+  }
+}
+
+let guardandoPendiente = null;
+function guardarDatos() {
+  if (guardandoPendiente) clearTimeout(guardandoPendiente);
+  guardandoPendiente = setTimeout(function() {
+    try {
+      const data = { pagos: pagosBD, sms: smsBancoBD, guardado: new Date().toISOString() };
+      fs.writeFileSync(archivoDatos, JSON.stringify(data), 'utf8');
+    } catch (e) {
+      console.error('[DATOS] Error guardando: ' + e.message);
+    }
+  }, 400);
+}
+
+cargarDatos();
+
+// ==========================================
+// UTILIDADES
+// ==========================================
+function quitarAcentos(s) {
+  return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function conTimeout(promesa, ms, etiqueta) {
+  let temporizador;
+  const limite = new Promise(function(resolve, reject) {
+    temporizador = setTimeout(function() {
+      reject(new Error('Tiempo agotado en ' + etiqueta));
+    }, ms);
+  });
+  return Promise.race([promesa, limite]).finally(function() {
+    clearTimeout(temporizador);
+  });
+}
+
+function normalizarRef(ref) {
+  if (!ref) return '';
+  return String(ref).replace(/\D/g, '').replace(/^0+/, '');
+}
+
+// ==========================================
+// MAPA DE CODIGOS DE BANCO EN VENEZUELA
+// ==========================================
 const CODIGOS_BANCO = {
   '0102': 'Banco de Venezuela',
   '0104': 'Banco Venezolano de Credito',
@@ -66,222 +132,9 @@ const CODIGOS_BANCO = {
 };
 const LISTA_BANCOS = Object.values(CODIGOS_BANCO);
 
-function conTimeout(promesa, ms, etiqueta) {
-  let temporizador;
-  const limite = new Promise(function(resolve, reject) {
-    temporizador = setTimeout(function() {
-      reject(new Error('Tiempo agotado en ' + etiqueta));
-    }, ms);
-  });
-  return Promise.race([promesa, limite]).finally(function() {
-    clearTimeout(temporizador);
-  });
-}
-
 // ==========================================
-// FILTRO: DETECTAR SI ES COMPROBANTE BANCARIO
+// DETECCION DE BANCO POR CODIGO DE CUENTA
 // ==========================================
-function analizarComprobante(texto) {
-  const resultado = {
-    valido: false,
-    motivo: '',
-    puntos: 0,
-    tipo: 'desconocido',
-    anclasFuertes: [],
-    anclasDebiles: [],
-    senalesDocumento: []
-  };
-
-  if (!texto || texto.replace(/\s/g, '').length < 15) {
-    resultado.motivo = 'La imagen no tiene texto legible suficiente';
-    return resultado;
-  }
-
-  const quitarAcentos = function(s) {
-    return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  };
-
-  const base = quitarAcentos(texto.toLowerCase());
-  const lineas = base.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l.length > 0; });
-
-  // ==========================================
-  // 1) EXCLUIR LINEAS DE CONCEPTO / DESCRIPCION
-  //    Ahi el cliente escribe "pago de factura",
-  //    "pago de orden", etc. NO debe rechazar.
-  // ==========================================
-  const etiquetaConcepto = /^(concepto|descripcion|motivo|observacion|observaciones|nota|comentario|detalle|asunto)\b/;
-  const lineasDocumento = [];
-  let saltarSiguiente = false;
-  for (let i = 0; i < lineas.length; i++) {
-    const linea = lineas[i];
-    if (etiquetaConcepto.test(linea)) {
-      const resto = linea.replace(etiquetaConcepto, '').replace(/[:\-\s]/g, '');
-      if (resto.length === 0) saltarSiguiente = true;
-      continue;
-    }
-    if (saltarSiguiente) {
-      saltarSiguiente = false;
-      continue;
-    }
-    lineasDocumento.push(linea);
-  }
-
-  const doc = lineasDocumento.join('\n');
-  const plano = doc.replace(/\s+/g, ' ');
-  const compacto = doc.replace(/\s/g, '');
-
-  // ==========================================
-  // 2) ANCLAS FUERTES: prueban que es un
-  //    comprobante de operacion bancaria
-  // ==========================================
-  const listaFuertes = [
-    [/\bpago\s*movil\b/, 'pago movil'],
-    [/\bcomprobante\b/, 'comprobante'],
-    [/\b(?:nro|no|num|numero)\.?\s*(?:de\s*)?(?:referencia|operacion|control)\b/, 'nro referencia/operacion'],
-    [/\breferencia\s*[:#]?\s*\d{6,}/, 'referencia con numero'],
-    [/\b(?:operacion|transaccion|pago|transferencia|envio)\s*(?:exitos[oa]|aprobad[oa]|realizad[oa]|procesad[oa]|enviad[oa]|recibid[oa]|efectuad[oa])\b/, 'operacion exitosa'],
-    [/\b(?:exitos[oa]|aprobad[oa])\s*!/, 'estado exitoso'],
-    [/\bbdv\s*(?:en\s*linea|movil|app)\b/, 'BDV en linea'],
-    [/\bpago\s*bdv\b/, 'Pago BDV'],
-    [/\bbanesco\s*(?:movil|en\s*linea)\b/, 'Banesco movil'],
-    [/\bprovipay\b/, 'Provipay'],
-    [/\btpago\b/, 'Tpago'],
-    [/\bmercantil\s*(?:en\s*linea|movil)\b/, 'Mercantil en linea'],
-    [/\bbancamiga\s*(?:movil|app)\b/, 'Bancamiga movil'],
-    [/\bbanplus\s*(?:movil|app)\b/, 'Banplus movil'],
-    [/\brecibo\s*de\s*(?:pago|transferencia)\b/, 'recibo de pago'],
-    [/\b(?:cuenta|telefono)\s*(?:origen|destino)\b/, 'cuenta/telefono origen-destino'],
-    [/\bbeneficiario\b/, 'beneficiario']
-  ];
-  for (const par of listaFuertes) {
-    if (par[0].test(plano)) resultado.anclasFuertes.push(par[1]);
-  }
-
-  // ==========================================
-  // 3) ANCLAS DEBILES: apoyan pero no bastan
-  // ==========================================
-  const listaDebiles = [
-    [/\btransferencia\b/, 'transferencia'],
-    [/\breferencia\b/, 'referencia'],
-    [/\bbanco\b/, 'palabra banco'],
-    [/\bbdv\b/, 'bdv'],
-    [/\bbanesco\b/, 'banesco'],
-    [/\bmercantil\b/, 'mercantil'],
-    [/\bprovincial\b/, 'provincial'],
-    [/\bbancamiga\b/, 'bancamiga'],
-    [/\bbanplus\b/, 'banplus'],
-    [/\bbancaribe\b/, 'bancaribe'],
-    [/\bbancrecer\b/, 'bancrecer'],
-    [/\bsofitasa\b/, 'sofitasa'],
-    [/\bbangente\b/, 'bangente'],
-    [/\btesoro\b/, 'tesoro'],
-    [/\bexterior\b/, 'exterior'],
-    [/\bcaroni\b/, 'caroni'],
-    [/\bplaza\b/, 'plaza'],
-    [/\bactivo\b/, 'activo'],
-    [/\bmi\s*banco\b/, 'mi banco'],
-    [/\bnacional\s*de\s*credito\b/, 'bnc'],
-    [/\bfondo\s*comun\b/, 'fondo comun'],
-    [/\bmonto\b/, 'monto'],
-    [/\bbs\.?\b/, 'bs'],
-    [/\bbolivares\b/, 'bolivares'],
-    [/\babono\b/, 'abono'],
-    [/\bdeposito\b/, 'deposito'],
-    [/\bcedula\b/, 'cedula'],
-    [/\bfecha\s*(?:de\s*)?(?:operacion|transaccion|pago)\b/, 'fecha de operacion']
-  ];
-  for (const par of listaDebiles) {
-    if (par[0].test(plano)) resultado.anclasDebiles.push(par[1]);
-  }
-
-  // ==========================================
-  // 4) DATOS DE PAGO
-  // ==========================================
-  const tieneReferencia = /\b\d{6,15}\b/.test(plano);
-  const tieneMonto = /\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\b/.test(plano);
-  const tieneCuenta = /\b0\d{19}\b/.test(compacto);
-  const tieneTelefono = /\b0(?:412|414|416|424|426|212)\d{7}\b/.test(compacto);
-  const tieneDatosPago = tieneReferencia || tieneMonto;
-
-  // ==========================================
-  // 5) ESTRUCTURA DE FACTURA / ORDEN
-  //    (solo en lineas que NO son concepto)
-  // ==========================================
-  const senales = [];
-  if (/\bsub\s*total\b/.test(plano)) senales.push('subtotal');
-  if (/\biva\b/.test(plano) || /\bi\.v\.a\b/.test(plano)) senales.push('iva');
-  if (/\b(?:factura|proforma|presupuesto|cotizacion)\s*(?:n|no|nro|numero|#|:)/.test(plano)) senales.push('factura nro');
-  if (/^\s*(factura|presupuesto|cotizacion|proforma)\s*$/m.test(doc)) senales.push('titulo factura');
-  if (/\borden\s*(?:de\s*)?(?:servicio|compra|trabajo|pedido)\b/.test(plano)) senales.push('orden de servicio');
-  if (/\bnota\s*de\s*(?:entrega|pedido)\b/.test(plano)) senales.push('nota de entrega');
-  if (/\btotal\s*a\s*pagar\b/.test(plano)) senales.push('total a pagar');
-  if (/\bsaldo\s*(?:pendiente|deudor|anterior)\b/.test(plano)) senales.push('saldo pendiente');
-  if (/\bcondiciones\s*de\s*pago\b/.test(plano)) senales.push('condiciones de pago');
-  if (/\bfecha\s*de\s*(?:emision|vencimiento)\b/.test(plano)) senales.push('fecha emision');
-  if (/\brif\s*[:\-]?\s*[jvgpe]\s*-?\s*\d/.test(plano)) senales.push('rif emisor');
-  if (/\bcant(?:idad)?\b/.test(plano) && /\b(?:p\.?\s*unit|precio\s*unit|unitario|importe)\b/.test(plano)) senales.push('tabla cantidad/precio');
-  if (/\bdescripcion\b/.test(plano) && /\b(?:unidad|medida|sku|codigo\s*producto)\b/.test(plano)) senales.push('tabla productos');
-  resultado.senalesDocumento = senales;
-
-  const fuertes = resultado.anclasFuertes.length;
-  const debiles = resultado.anclasDebiles.length;
-  resultado.puntos = (fuertes * 3) + debiles + (tieneReferencia ? 2 : 0) + (tieneMonto ? 2 : 0) + (tieneCuenta ? 3 : 0) + (tieneTelefono ? 1 : 0);
-
-  // Tipo de operacion
-  if (/\bpago\s*movil\b/.test(plano) || /\bprovipay\b/.test(plano) || /\btpago\b/.test(plano)) {
-    resultado.tipo = 'pago_movil';
-  } else if (/\btransferencia\b/.test(plano)) {
-    resultado.tipo = 'transferencia';
-  } else if (/\bdeposito\b/.test(plano)) {
-    resultado.tipo = 'deposito';
-  }
-
-  // ==========================================
-  // REGLA A: ancla fuerte + datos -> ACEPTA
-  // (aunque el concepto diga "pago de factura")
-  // ==========================================
-  if (fuertes >= 1 && tieneDatosPago) {
-    resultado.valido = true;
-    resultado.motivo = 'Comprobante bancario verificado (' + resultado.anclasFuertes.slice(0, 3).join(', ') + ')';
-    return resultado;
-  }
-
-  // ==========================================
-  // REGLA B: estructura de factura sin ancla
-  // fuerte -> RECHAZA
-  // ==========================================
-  if (senales.length >= 2 && fuertes === 0) {
-    resultado.valido = false;
-    resultado.motivo = 'Parece factura u orden de servicio (' + senales.slice(0, 3).join(', ') + ')';
-    return resultado;
-  }
-
-  // ==========================================
-  // REGLA C: capture bancario simple
-  // (banco + monto/referencia, sin estructura
-  // de factura y sin palabra comprobante)
-  // ==========================================
-  const tieneEntidad = debiles >= 1 && (/\bbanco\b/.test(plano) || /\bbdv\b/.test(plano) || /\bbanesco\b/.test(plano) || /\bmercantil\b/.test(plano) || /\bprovincial\b/.test(plano) || /\bbancamiga\b/.test(plano) || /\bbanplus\b/.test(plano) || /\bbancaribe\b/.test(plano) || tieneCuenta);
-  if (tieneEntidad && tieneDatosPago && senales.length === 0) {
-    resultado.valido = true;
-    resultado.motivo = 'Comprobante bancario aceptado por entidad + datos de pago';
-    return resultado;
-  }
-
-  // ==========================================
-  // REGLA D: no hay evidencia suficiente
-  // ==========================================
-  if (!tieneDatosPago) {
-    resultado.motivo = 'No se detecto referencia ni monto de pago';
-  } else if (senales.length >= 1 && fuertes === 0) {
-    resultado.motivo = 'Documento no bancario (' + senales[0] + ') sin datos de operacion bancaria';
-  } else {
-    resultado.motivo = 'No se identifico una operacion bancaria (pago movil, transferencia o comprobante)';
-  }
-  resultado.valido = false;
-  return resultado;
-}
-
 function detectarBancoPorCodigoCuenta(texto) {
   if (!texto) return null;
   const cuentas = texto.match(/\b(0\d{3})\d{16}\b/g) || [];
@@ -297,6 +150,9 @@ function detectarBancoPorCodigoCuenta(texto) {
   return null;
 }
 
+// ==========================================
+// EXTRACCION DE REFERENCIA
+// ==========================================
 function extraerReferencia(texto) {
   if (!texto) return '';
   const limpio = texto.replace(/\s+/g, ' ').replace(/[|]/g, 'I');
@@ -340,21 +196,40 @@ function extraerReferencia(texto) {
   return '';
 }
 
+// ==========================================
+// NORMALIZACION DE MONTOS
+// ==========================================
 function normalizarMontoVE(str) {
   if (!str) return 0;
-  let limpio = str.replace(/\s/g, '').replace(/\./g, '').replace(',', '.');
+  let limpio = String(str).replace(/\s/g, '');
+  if (limpio.indexOf(',') !== -1) {
+    limpio = limpio.replace(/\./g, '').replace(',', '.');
+  } else {
+    const partes = limpio.split('.');
+    if (partes.length > 1 && partes[partes.length - 1].length === 2) {
+      const dec = partes.pop();
+      limpio = partes.join('') + '.' + dec;
+    } else if (partes.length > 1) {
+      limpio = partes.join('');
+    }
+  }
   const num = parseFloat(limpio);
   return isNaN(num) ? 0 : num;
 }
 
+// ==========================================
+// EXTRACCION DE MONTO
+// ==========================================
 function extraerMonto(texto) {
   if (!texto) return 0.00;
   const limpio = texto.replace(/\s+/g, ' ');
+
   const matchPersonal = limpio.match(/\b(\d{1,3}(?:\.\d{3})*,\d{2})\s*(?:Bs|bs|BS)?\b/);
   if (matchPersonal) {
     const monto = normalizarMontoVE(matchPersonal[1]);
     if (monto > 0) return monto;
   }
+
   const matchBDV = limpio.match(/\b(\d{1,3}(?:\.\d{3})+\.\d{2})\b/);
   if (matchBDV) {
     const partes = matchBDV[1].split('.');
@@ -363,6 +238,7 @@ function extraerMonto(texto) {
     const monto = parseFloat(entero + '.' + decimales);
     if (!isNaN(monto) && monto > 0) return monto;
   }
+
   const patronesConEtiqueta = [
     /(?:monto|total|importe|valor|bs\.?|bol[ií]vares?|cantidad)[^\d]{0,15}([\d]{1,3}(?:[.\s]\d{3})*(?:[.,]\d{1,2})?)/i,
     /Bs\.?\s*([\d]{1,3}(?:[.\s]\d{3})*(?:[.,]\d{1,2})?)/i
@@ -374,6 +250,7 @@ function extraerMonto(texto) {
       if (monto > 0 && monto < 999999999) return monto;
     }
   }
+
   const matchSimple = limpio.match(/\b(\d{1,7}[.,]\d{2})\b/);
   if (matchSimple) {
     const monto = normalizarMontoVE(matchSimple[1]);
@@ -382,6 +259,9 @@ function extraerMonto(texto) {
   return 0.00;
 }
 
+// ==========================================
+// EXTRACCION DE FECHA
+// ==========================================
 function extraerFecha(texto) {
   if (!texto) return '';
   let match = texto.match(/(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4})/);
@@ -396,11 +276,15 @@ function extraerFecha(texto) {
   return '';
 }
 
+// ==========================================
+// EXTRACCION DE BANCO EMISOR
+// ==========================================
 function extraerBanco(texto) {
   if (!texto) return 'Por confirmar';
   const limpio = texto.toLowerCase();
   const bancoPorCodigo = detectarBancoPorCodigoCuenta(texto);
   if (bancoPorCodigo) return bancoPorCodigo;
+
   const patronesBanco = [
     /pago\s*m[oó]vil\s*(?:desde|de)?[:\s]+([A-ZÁÉÍÓÚa-záéíóúñÑ\s]+?)(?:\s+(?:a|para|por)|\n|$)/i,
     /transferencia\s*(?:desde|de)?[:\s]+([A-ZÁÉÍÓÚa-záéíóúñÑ\s]+?)(?:\s+(?:a|para|por)|\n|$)/i,
@@ -416,6 +300,7 @@ function extraerBanco(texto) {
       }
     }
   }
+
   const bancos = [
     { nombre: 'Bancamiga', claves: ['bancamiga'] },
     { nombre: 'Banesco', claves: ['banesco', 'banesco banco universal'] },
@@ -441,6 +326,173 @@ function extraerBanco(texto) {
   return 'Por confirmar';
 }
 
+// ==========================================
+// FILTRO: SOLO COMPROBANTES BANCARIOS
+// ==========================================
+function analizarComprobante(texto) {
+  const resultado = {
+    valido: false,
+    motivo: '',
+    puntos: 0,
+    tipo: 'desconocido',
+    anclasFuertes: [],
+    anclasDebiles: [],
+    senalesDocumento: []
+  };
+
+  if (!texto || texto.replace(/\s/g, '').length < 15) {
+    resultado.motivo = 'La imagen no tiene texto legible suficiente';
+    return resultado;
+  }
+
+  const base = quitarAcentos(texto.toLowerCase());
+  const lineas = base.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l.length > 0; });
+
+  const etiquetaConcepto = /^(concepto|descripcion|motivo|observacion|observaciones|nota|comentario|detalle|asunto)\b/;
+  const lineasDocumento = [];
+  let saltarSiguiente = false;
+  for (let i = 0; i < lineas.length; i++) {
+    const linea = lineas[i];
+    if (etiquetaConcepto.test(linea)) {
+      const resto = linea.replace(etiquetaConcepto, '').replace(/[:\-\s]/g, '');
+      if (resto.length === 0) saltarSiguiente = true;
+      continue;
+    }
+    if (saltarSiguiente) {
+      saltarSiguiente = false;
+      continue;
+    }
+    lineasDocumento.push(linea);
+  }
+
+  const doc = lineasDocumento.join('\n');
+  const plano = doc.replace(/\s+/g, ' ');
+  const compacto = doc.replace(/\s/g, '');
+
+  const listaFuertes = [
+    [/\bpago\s*movil\b/, 'pago movil'],
+    [/\bcomprobante\b/, 'comprobante'],
+    [/\b(?:nro|no|num|numero)\.?\s*(?:de\s*)?(?:referencia|operacion|control)\b/, 'nro referencia/operacion'],
+    [/\breferencia\s*[:#]?\s*\d{6,}/, 'referencia con numero'],
+    [/\b(?:operacion|transaccion|pago|transferencia|envio)\s*(?:exitos[oa]|aprobad[oa]|realizad[oa]|procesad[oa]|enviad[oa]|recibid[oa]|efectuad[oa])\b/, 'operacion exitosa'],
+    [/\b(?:exitos[oa]|aprobad[oa])\s*!/, 'estado exitoso'],
+    [/\bbdv\s*(?:en\s*linea|movil|app)\b/, 'BDV en linea'],
+    [/\bpago\s*bdv\b/, 'Pago BDV'],
+    [/\bbanesco\s*(?:movil|en\s*linea)\b/, 'Banesco movil'],
+    [/\bprovipay\b/, 'Provipay'],
+    [/\btpago\b/, 'Tpago'],
+    [/\bmercantil\s*(?:en\s*linea|movil)\b/, 'Mercantil en linea'],
+    [/\bbancamiga\s*(?:movil|app)\b/, 'Bancamiga movil'],
+    [/\bbanplus\s*(?:movil|app)\b/, 'Banplus movil'],
+    [/\brecibo\s*de\s*(?:pago|transferencia)\b/, 'recibo de pago'],
+    [/\b(?:cuenta|telefono)\s*(?:origen|destino)\b/, 'cuenta/telefono origen-destino'],
+    [/\bbeneficiario\b/, 'beneficiario']
+  ];
+  for (const par of listaFuertes) {
+    if (par[0].test(plano)) resultado.anclasFuertes.push(par[1]);
+  }
+
+  const listaDebiles = [
+    [/\btransferencia\b/, 'transferencia'],
+    [/\breferencia\b/, 'referencia'],
+    [/\bbanco\b/, 'palabra banco'],
+    [/\bbdv\b/, 'bdv'],
+    [/\bbanesco\b/, 'banesco'],
+    [/\bmercantil\b/, 'mercantil'],
+    [/\bprovincial\b/, 'provincial'],
+    [/\bbancamiga\b/, 'bancamiga'],
+    [/\bbanplus\b/, 'banplus'],
+    [/\bbancaribe\b/, 'bancaribe'],
+    [/\bbancrecer\b/, 'bancrecer'],
+    [/\bsofitasa\b/, 'sofitasa'],
+    [/\bbangente\b/, 'bangente'],
+    [/\btesoro\b/, 'tesoro'],
+    [/\bexterior\b/, 'exterior'],
+    [/\bcaroni\b/, 'caroni'],
+    [/\bplaza\b/, 'plaza'],
+    [/\bactivo\b/, 'activo'],
+    [/\bmi\s*banco\b/, 'mi banco'],
+    [/\bnacional\s*de\s*credito\b/, 'bnc'],
+    [/\bfondo\s*comun\b/, 'fondo comun'],
+    [/\bmonto\b/, 'monto'],
+    [/\bbs\.?\b/, 'bs'],
+    [/\bbolivares\b/, 'bolivares'],
+    [/\babono\b/, 'abono'],
+    [/\bdeposito\b/, 'deposito'],
+    [/\bcedula\b/, 'cedula'],
+    [/\bfecha\s*(?:de\s*)?(?:operacion|transaccion|pago)\b/, 'fecha de operacion']
+  ];
+  for (const par of listaDebiles) {
+    if (par[0].test(plano)) resultado.anclasDebiles.push(par[1]);
+  }
+
+  const tieneReferencia = /\b\d{6,15}\b/.test(plano);
+  const tieneMonto = /\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\b/.test(plano);
+  const tieneCuenta = /\b0\d{19}\b/.test(compacto);
+  const tieneTelefono = /\b0(?:412|414|416|424|426|212)\d{7}\b/.test(compacto);
+  const tieneDatosPago = tieneReferencia || tieneMonto;
+
+  const senales = [];
+  if (/\bsub\s*total\b/.test(plano)) senales.push('subtotal');
+  if (/\biva\b/.test(plano) || /\bi\.v\.a\b/.test(plano)) senales.push('iva');
+  if (/\b(?:factura|proforma|presupuesto|cotizacion)\s*(?:n|no|nro|numero|#|:)/.test(plano)) senales.push('factura nro');
+  if (/^\s*(factura|presupuesto|cotizacion|proforma)\s*$/m.test(doc)) senales.push('titulo factura');
+  if (/\borden\s*(?:de\s*)?(?:servicio|compra|trabajo|pedido)\b/.test(plano)) senales.push('orden de servicio');
+  if (/\bnota\s*de\s*(?:entrega|pedido)\b/.test(plano)) senales.push('nota de entrega');
+  if (/\btotal\s*a\s*pagar\b/.test(plano)) senales.push('total a pagar');
+  if (/\bsaldo\s*(?:pendiente|deudor|anterior)\b/.test(plano)) senales.push('saldo pendiente');
+  if (/\bcondiciones\s*de\s*pago\b/.test(plano)) senales.push('condiciones de pago');
+  if (/\bfecha\s*de\s*(?:emision|vencimiento)\b/.test(plano)) senales.push('fecha emision');
+  if (/\brif\s*[:\-]?\s*[jvgpe]\s*-?\s*\d/.test(plano)) senales.push('rif emisor');
+  if (/\bcant(?:idad)?\b/.test(plano) && /\b(?:p\.?\s*unit|precio\s*unit|unitario|importe)\b/.test(plano)) senales.push('tabla cantidad/precio');
+  if (/\bdescripcion\b/.test(plano) && /\b(?:unidad|medida|sku|codigo\s*producto)\b/.test(plano)) senales.push('tabla productos');
+  resultado.senalesDocumento = senales;
+
+  const fuertes = resultado.anclasFuertes.length;
+  const debiles = resultado.anclasDebiles.length;
+  resultado.puntos = (fuertes * 3) + debiles + (tieneReferencia ? 2 : 0) + (tieneMonto ? 2 : 0) + (tieneCuenta ? 3 : 0) + (tieneTelefono ? 1 : 0);
+
+  if (/\bpago\s*movil\b/.test(plano) || /\bprovipay\b/.test(plano) || /\btpago\b/.test(plano)) {
+    resultado.tipo = 'pago_movil';
+  } else if (/\btransferencia\b/.test(plano)) {
+    resultado.tipo = 'transferencia';
+  } else if (/\bdeposito\b/.test(plano)) {
+    resultado.tipo = 'deposito';
+  }
+
+  if (fuertes >= 1 && tieneDatosPago) {
+    resultado.valido = true;
+    resultado.motivo = 'Comprobante bancario verificado (' + resultado.anclasFuertes.slice(0, 3).join(', ') + ')';
+    return resultado;
+  }
+
+  if (senales.length >= 2 && fuertes === 0) {
+    resultado.valido = false;
+    resultado.motivo = 'Parece factura u orden de servicio (' + senales.slice(0, 3).join(', ') + ')';
+    return resultado;
+  }
+
+  const tieneEntidad = debiles >= 1 && (/\bbanco\b/.test(plano) || /\bbdv\b/.test(plano) || /\bbanesco\b/.test(plano) || /\bmercantil\b/.test(plano) || /\bprovincial\b/.test(plano) || /\bbancamiga\b/.test(plano) || /\bbanplus\b/.test(plano) || /\bbancaribe\b/.test(plano) || tieneCuenta);
+  if (tieneEntidad && tieneDatosPago && senales.length === 0) {
+    resultado.valido = true;
+    resultado.motivo = 'Comprobante bancario aceptado por entidad + datos de pago';
+    return resultado;
+  }
+
+  if (!tieneDatosPago) {
+    resultado.motivo = 'No se detecto referencia ni monto de pago';
+  } else if (senales.length >= 1 && fuertes === 0) {
+    resultado.motivo = 'Documento no bancario (' + senales[0] + ') sin datos de operacion bancaria';
+  } else {
+    resultado.motivo = 'No se identifico una operacion bancaria (pago movil, transferencia o comprobante)';
+  }
+  resultado.valido = false;
+  return resultado;
+}
+
+// ==========================================
+// PREPROCESAMIENTO DE IMAGEN
+// ==========================================
 async function preprocesarImagen(rutaOriginal) {
   const marca = Date.now();
   const rutaNormal = path.join(uploadDir, 'ocr_normal_' + marca + '.png');
@@ -461,6 +513,9 @@ async function preprocesarImagen(rutaOriginal) {
   }
 }
 
+// ==========================================
+// OCR
+// ==========================================
 async function procesarImagenOCR(rutaImagen) {
   let rutas = null;
   let worker = null;
@@ -503,6 +558,126 @@ async function procesarImagenOCR(rutaImagen) {
   }
 }
 
+// ==========================================
+// PARSER DE NOTIFICACIONES BDV
+// ==========================================
+function parsearNotificacionBDV(texto) {
+  const r = {
+    valido: false,
+    tipo: 'desconocido',
+    nombre: '',
+    telefono: '',
+    monto: 0,
+    referencia: '',
+    fecha: '',
+    motivo: ''
+  };
+
+  if (!texto || typeof texto !== 'string') {
+    r.motivo = 'Texto vacio';
+    return r;
+  }
+
+  const t = quitarAcentos(texto.replace(/\s+/g, ' ').trim());
+  const lower = t.toLowerCase();
+
+  if (/pagomovil|pago movil/.test(lower)) {
+    r.tipo = 'pago_movil';
+  } else if (/transferencia/.test(lower)) {
+    r.tipo = 'transferencia';
+  } else if (/deposito/.test(lower)) {
+    r.tipo = 'deposito';
+  }
+
+  const mMonto = t.match(/Bs\.?\s*([\d.,]+)/i);
+  if (mMonto) {
+    const n = normalizarMontoVE(mMonto[1]);
+    if (n > 0) r.monto = Math.round(n * 100) / 100;
+  }
+
+  const mTel = t.match(/\b(04(?:12|14|16|24|26))[\s\-.]?(\d{7})\b/);
+  if (mTel) r.telefono = mTel[1] + '-' + mTel[2];
+  if (!r.telefono) {
+    const mTel2 = t.match(/\b(02\d{2})[\s\-.]?(\d{7})\b/);
+    if (mTel2) r.telefono = mTel2[1] + '-' + mTel2[2];
+  }
+
+  const mRef = t.match(/(?:ref(?:erencia)?|numero\s*de\s*operacion|nro\.?\s*de\s*operacion|num\.?\s*de\s*operacion|numero\s*de\s*referencia|operacion|control)\s*[:.#]?\s*(\d{6,20})/i);
+  if (mRef) {
+    r.referencia = mRef[1];
+  } else {
+    let sinRuido = t.replace(/Bs\.?\s*[\d.,]+/i, ' ');
+    if (r.telefono) sinRuido = sinRuido.replace(r.telefono, ' ');
+    const mRef2 = sinRuido.match(/\b(\d{8,20})\b/);
+    if (mRef2) r.referencia = mRef2[1];
+  }
+
+  const mNombre = t.match(/\bde\s+([A-Z][A-Za-z\s.]{3,60}?)\s+por\s+Bs/i);
+  if (mNombre) r.nombre = mNombre[1].trim().replace(/\s+/g, ' ');
+
+  const mHora = t.match(/hora\s*[:.]?\s*(\d{1,2}:\d{2})/i);
+  const mFechaCorta = t.match(/fecha\s*[:.]?\s*(\d{2})[\/-](\d{2})[\/-](\d{2,4})/i);
+  if (mFechaCorta) {
+    let anio = mFechaCorta[3];
+    if (anio.length === 2) anio = '20' + anio;
+    r.fecha = mFechaCorta[1] + '/' + mFechaCorta[2] + '/' + anio;
+    if (mHora) r.fecha = r.fecha + ' ' + mHora[1];
+  }
+  if (!r.fecha) {
+    const mFecha = t.match(/(\d{2})[\/-](\d{2})[\/-](\d{4})(?:\s+(\d{1,2}:\d{2})(?:\s*([APap]\.?[Mm]\.?))?)?/);
+    if (mFecha) {
+      r.fecha = mFecha[1] + '/' + mFecha[2] + '/' + mFecha[3];
+      if (mFecha[4]) r.fecha = r.fecha + ' ' + mFecha[4] + (mFecha[5] ? ' ' + mFecha[5].toUpperCase() : '');
+    }
+  }
+
+  if (!r.monto && !r.referencia) {
+    r.motivo = 'No se detecto monto ni referencia';
+    return r;
+  }
+  if (!r.monto) {
+    r.motivo = 'No se detecto el monto';
+    return r;
+  }
+  if (!r.referencia) {
+    r.motivo = 'No se detecto la referencia';
+    return r;
+  }
+
+  const esRecibido = /recibiste|recibido|recibida|abono|pago recibido/.test(lower);
+  if (!esRecibido && r.tipo === 'desconocido') {
+    r.motivo = 'Tiene monto y referencia pero no se identifica el tipo de operacion';
+    return r;
+  }
+
+  r.valido = true;
+  r.motivo = 'Notificacion BDV valida';
+  return r;
+}
+
+function buscarPagoPorNotificacion(notif) {
+  const refN = normalizarRef(notif.referencia);
+  let i;
+  for (i = 0; i < pagosBD.length; i++) {
+    const p = pagosBD[i];
+    if (p.estado === 'aprobado') continue;
+    const pN = normalizarRef(p.ref);
+    if (!pN || !refN) continue;
+    if (pN === refN) return { pago: p, criterio: 'referencia exacta' };
+    if (pN.length >= 8 && refN.length >= 8 && pN.slice(-8) === refN.slice(-8)) {
+      return { pago: p, criterio: 'ultimos 8 digitos' };
+    }
+  }
+  const candidatos = pagosBD.filter(function(p) {
+    return p.estado !== 'aprobado' && Math.abs((parseFloat(p.monto) || 0) - notif.monto) < 0.01;
+  });
+  if (candidatos.length === 1) return { pago: candidatos[0], criterio: 'monto exacto' };
+  return null;
+}
+
+// ==========================================
+// WHATSAPP - CONEXION
+// ==========================================
 async function iniciarWhatsApp(forceNew) {
   if (isConnecting && !forceNew) {
     console.log('Ya hay una conexion en proceso...');
@@ -516,7 +691,17 @@ async function iniciarWhatsApp(forceNew) {
   try {
     if (forceNew && fs.existsSync(authDir)) {
       console.log('Limpiando sesion anterior...');
+      const respaldo = path.join(datosDir, 'datos_validador.json');
+      const existeRespaldo = fs.existsSync(respaldo);
+      let contenidoRespaldo = null;
+      if (existeRespaldo) {
+        try { contenidoRespaldo = fs.readFileSync(respaldo, 'utf8'); } catch (e) {}
+      }
       fs.rmSync(authDir, { recursive: true, force: true });
+      fs.mkdirSync(authDir, { recursive: true });
+      if (contenidoRespaldo) {
+        try { fs.writeFileSync(respaldo, contenidoRespaldo, 'utf8'); } catch (e) {}
+      }
     }
     if (!fs.existsSync(authDir)) {
       fs.mkdirSync(authDir, { recursive: true });
@@ -574,7 +759,7 @@ async function iniciarWhatsApp(forceNew) {
         if (statusCode === DisconnectReason.loggedOut) {
           console.log('Sesion cerrada (loggedOut).');
           estadoConexion = 'error';
-          ultimoError = 'Sesion cerrada desde el telefono.';
+          ultimoError = 'Sesion cerrada desde el telefono. Usa /api/restart-whatsapp';
           ultimoQrGenerado = '';
           return;
         }
@@ -583,7 +768,7 @@ async function iniciarWhatsApp(forceNew) {
         if (intentosConexion > MAX_INTENTOS) {
           console.log('Demasiados intentos fallidos.');
           estadoConexion = 'error';
-          ultimoError = 'Demasiados intentos fallidos.';
+          ultimoError = 'Demasiados intentos fallidos. Usa /api/restart-whatsapp';
           return;
         }
         estadoConexion = 'reconectando';
@@ -638,7 +823,7 @@ async function iniciarWhatsApp(forceNew) {
         pagosBD.unshift({
           id: Date.now(),
           cliente: nombreCliente,
-          telefono: '+' + telefonoLimpio,
+          telefono: telefonoLimpio ? '+' + telefonoLimpio : '',
           ref: ref || 'SIN_REF',
           monto: monto,
           banco: bancoDetectado,
@@ -648,6 +833,7 @@ async function iniciarWhatsApp(forceNew) {
           imagen: null,
           textoOCR: textoPlano.substring(0, 600)
         });
+        guardarDatos();
 
         await sockWhatsApp.sendMessage(remitente, {
           text: 'Comprobante recibido.\n\nDatos:\n- Ref: ' + (ref || 'No detectada') + '\n- Monto: Bs. ' + monto.toFixed(2) + '\n- Banco: ' + bancoDetectado + '\n\nPronto validaremos.'
@@ -690,14 +876,10 @@ async function iniciarWhatsApp(forceNew) {
           textoOCR = '';
         }
 
-        // ==========================================
-        // FILTRO: SOLO COMPROBANTES BANCARIOS
-        // ==========================================
         const analisis = analizarComprobante(textoOCR);
         console.log('[FILTRO] Puntos: ' + analisis.puntos + ' | Valido: ' + analisis.valido + ' | Motivo: ' + analisis.motivo);
 
         if (!analisis.valido) {
-          // Borrar la imagen porque no es un comprobante
           try { fs.unlinkSync(rutaCompleta); } catch (e) {}
           console.log('[FILTRO] Imagen RECHAZADA y eliminada: ' + nombreArchivo);
           try {
@@ -718,7 +900,7 @@ async function iniciarWhatsApp(forceNew) {
         pagosBD.unshift({
           id: Date.now(),
           cliente: nombreCliente,
-          telefono: '+' + telefonoLimpio,
+          telefono: telefonoLimpio ? '+' + telefonoLimpio : '',
           ref: ref || 'SIN_REF',
           monto: monto,
           banco: bancoDetectado,
@@ -726,9 +908,11 @@ async function iniciarWhatsApp(forceNew) {
           fecha: fechaComprobante || new Date().toLocaleString(),
           remitenteJid: remitente,
           imagen: nombreArchivo,
+          tipoOperacion: analisis.tipo,
           puntuacionComprobante: analisis.puntos,
           textoOCR: (textoOCR || 'OCR sin resultado').substring(0, 600)
         });
+        guardarDatos();
 
         try {
           await sockWhatsApp.sendMessage(remitente, {
@@ -750,143 +934,6 @@ async function iniciarWhatsApp(forceNew) {
 }
 
 iniciarWhatsApp();
-
-// ==========================================
-// PARSER DE NOTIFICACIONES BDV
-// ==========================================
-function parsearNotificacionBDV(texto) {
-  const r = {
-    valido: false,
-    tipo: 'desconocido',
-    nombre: '',
-    telefono: '',
-    monto: 0,
-    referencia: '',
-    fecha: '',
-    motivo: ''
-  };
-
-  if (!texto || typeof texto !== 'string') {
-    r.motivo = 'Texto vacio';
-    return r;
-  }
-
-  const original = texto.replace(/\s+/g, ' ').trim();
-  const t = quitarAcentos(original);
-  const lower = t.toLowerCase();
-
-  if (/pagomovil|pago movil/.test(lower)) {
-    r.tipo = 'pago_movil';
-  } else if (/transferencia/.test(lower)) {
-    r.tipo = 'transferencia';
-  } else if (/deposito/.test(lower)) {
-    r.tipo = 'deposito';
-  }
-
-  const mMonto = t.match(/Bs\.?\s*([\d.,]+)/i);
-  if (mMonto) {
-    let bruto = mMonto[1].replace(/\s/g, '');
-    if (bruto.indexOf(',') !== -1) {
-      bruto = bruto.replace(/\./g, '').replace(',', '.');
-    } else {
-      const partes = bruto.split('.');
-      if (partes.length > 1 && partes[partes.length - 1].length === 2) {
-        const dec = partes.pop();
-        bruto = partes.join('') + '.' + dec;
-      } else {
-        bruto = partes.join('');
-      }
-    }
-    const n = parseFloat(bruto);
-    if (!isNaN(n)) r.monto = Math.round(n * 100) / 100;
-  }
-
-  const mTel = t.match(/\b(04(?:12|14|16|24|26))[\s\-.]?(\d{7})\b/);
-  if (mTel) {
-    r.telefono = mTel[1] + '-' + mTel[2];
-  }
-  if (!r.telefono) {
-    const mTel2 = t.match(/\b(02\d{2})[\s\-.]?(\d{7})\b/);
-    if (mTel2) r.telefono = mTel2[1] + '-' + mTel2[2];
-  }
-
-  const mRef = t.match(/(?:ref(?:erencia)?|numero\s*de\s*operacion|nro\.?\s*de\s*operacion|num\.?\s*de\s*operacion|numero\s*de\s*referencia|operacion|control)\s*[:.#]?\s*(\d{6,20})/i);
-  if (mRef) {
-    r.referencia = mRef[1];
-  } else {
-    let sinRuido = t.replace(/Bs\.?\s*[\d.,]+/i, ' ');
-    if (r.telefono) sinRuido = sinRuido.replace(r.telefono, ' ');
-    const mRef2 = sinRuido.match(/\b(\d{8,20})\b/);
-    if (mRef2) r.referencia = mRef2[1];
-  }
-
-  const mNombre = t.match(/\bde\s+([A-Z][A-Za-z\s.]{3,60}?)\s+por\s+Bs/i);
-  if (mNombre) r.nombre = mNombre[1].trim().replace(/\s+/g, ' ');
-
-  const mHora = t.match(/hora\s*[:.]?\s*(\d{1,2}:\d{2})/i);
-  const mFechaCorta = t.match(/fecha\s*[:.]?\s*(\d{2})[-\/](\d{2})[-\/](\d{2,4})/i);
-  if (mFechaCorta) {
-    let anio = mFechaCorta[3];
-    if (anio.length === 2) anio = '20' + anio;
-    r.fecha = mFechaCorta[1] + '/' + mFechaCorta[2] + '/' + anio;
-    if (mHora) r.fecha = r.fecha + ' ' + mHora[1];
-  }
-  if (!r.fecha) {
-    const mFecha = t.match(/(\d{2})[-\/](\d{2})[-\/](\d{4})(?:\s+(\d{1,2}:\d{2})(?:\s*([APap]\.?[Mm]\.?))?)?/);
-    if (mFecha) {
-      r.fecha = mFecha[1] + '/' + mFecha[2] + '/' + mFecha[3];
-      if (mFecha[4]) r.fecha = r.fecha + ' ' + mFecha[4] + (mFecha[5] ? ' ' + mFecha[5].toUpperCase() : '');
-    }
-  }
-
-  if (!r.monto && !r.referencia) {
-    r.motivo = 'No se detecto monto ni referencia';
-    return r;
-  }
-  if (!r.monto) {
-    r.motivo = 'No se detecto el monto';
-    return r;
-  }
-  if (!r.referencia) {
-    r.motivo = 'No se detecto la referencia';
-    return r;
-  }
-
-  const esRecibido = /recibiste|recibido|recibida|abono|pago recibido/.test(lower);
-  if (!esRecibido && r.tipo === 'desconocido') {
-    r.motivo = 'Tiene monto y referencia pero no se identifica el tipo de operacion';
-    return r;
-  }
-
-  r.valido = true;
-  r.motivo = 'Notificacion BDV valida';
-  return r;
-}
-
-function normalizarRef(ref) {
-  if (!ref) return '';
-  return String(ref).replace(/\D/g, '').replace(/^0+/, '');
-}
-
-function buscarPagoPorNotificacion(notif) {
-  const refN = normalizarRef(notif.referencia);
-  let i;
-  for (i = 0; i < pagosBD.length; i++) {
-    const p = pagosBD[i];
-    if (p.estado === 'aprobado') continue;
-    const pN = normalizarRef(p.ref);
-    if (!pN || !refN) continue;
-    if (pN === refN) return { pago: p, criterio: 'referencia exacta' };
-    if (pN.length >= 8 && refN.length >= 8 && pN.slice(-8) === refN.slice(-8)) {
-      return { pago: p, criterio: 'ultimos 8 digitos' };
-    }
-  }
-  const candidatos = pagosBD.filter(function(p) {
-    return p.estado !== 'aprobado' && Math.abs((parseFloat(p.monto) || 0) - notif.monto) < 0.01;
-  });
-  if (candidatos.length === 1) return { pago: candidatos[0], criterio: 'monto exacto' };
-  return null;
-}
 
 // ==========================================
 // ENDPOINTS
@@ -930,9 +977,27 @@ app.get('/api/status', function(req, res) {
     sesionDir: authDir,
     sesionExiste: fs.existsSync(authDir),
     archivosSesion: fs.existsSync(authDir) ? fs.readdirSync(authDir).length : 0,
+    archivoDatos: archivoDatos,
+    datosExisten: fs.existsSync(archivoDatos),
     uptime: process.uptime(),
     pagos: pagosBD.length,
     sms: smsBancoBD.length
+  });
+});
+
+app.get('/api/diagnostico', function(req, res) {
+  res.json({
+    quitarAcentos: typeof quitarAcentos,
+    parsearNotificacionBDV: typeof parsearNotificacionBDV,
+    normalizarRef: typeof normalizarRef,
+    buscarPagoPorNotificacion: typeof buscarPagoPorNotificacion,
+    analizarComprobante: typeof analizarComprobante,
+    extraerMonto: typeof extraerMonto,
+    extraerReferencia: typeof extraerReferencia,
+    guardarDatos: typeof guardarDatos,
+    pagosRegistrados: pagosBD.length,
+    smsRegistrados: smsBancoBD.length,
+    estadoWhatsApp: estadoConexion
   });
 });
 
@@ -949,6 +1014,7 @@ app.patch('/api/pagos/:id/banco', function(req, res) {
   pago.banco = banco;
   pago.bancoManual = true;
   pago.fechaEdicion = new Date().toLocaleString();
+  guardarDatos();
   res.json({ status: 'success', id: id, banco: banco });
 });
 
@@ -961,10 +1027,10 @@ app.patch('/api/pagos/:id/estado', function(req, res) {
   }
   pago.estado = estado;
   pago.fechaAprobacion = new Date().toLocaleString();
+  guardarDatos();
   res.json({ status: 'success', id: id, estado: estado });
 });
 
-// NUEVO: Editar referencia y/o monto
 app.patch('/api/pagos/:id/editar', function(req, res) {
   const id = parseInt(req.params.id);
   const pago = pagosBD.find(function(p) { return p.id === id; });
@@ -974,13 +1040,16 @@ app.patch('/api/pagos/:id/editar', function(req, res) {
   if (req.body.ref !== undefined) pago.ref = req.body.ref;
   if (req.body.monto !== undefined) pago.monto = parseFloat(req.body.monto) || 0;
   if (req.body.cliente !== undefined) pago.cliente = req.body.cliente;
+  if (req.body.telefono !== undefined) pago.telefono = req.body.telefono;
+  if (req.body.telefonoPagador !== undefined) pago.telefonoPagador = req.body.telefonoPagador;
+  if (req.body.pagadorBanco !== undefined) pago.pagadorBanco = req.body.pagadorBanco;
   if (req.body.banco !== undefined) pago.banco = req.body.banco;
   if (req.body.estado !== undefined) pago.estado = req.body.estado;
   pago.fechaEdicion = new Date().toLocaleString();
+  guardarDatos();
   res.json({ status: 'success', id: id });
 });
 
-// Eliminar pago
 app.delete('/api/pagos/:id', function(req, res) {
   const id = parseInt(req.params.id);
   const indice = pagosBD.findIndex(function(p) { return p.id === id; });
@@ -995,7 +1064,19 @@ app.delete('/api/pagos/:id', function(req, res) {
     }
   }
   pagosBD.splice(indice, 1);
+  guardarDatos();
   console.log('Pago eliminado ID: ' + id);
+  res.json({ status: 'success', id: id });
+});
+
+app.delete('/api/sms/:id', function(req, res) {
+  const id = parseInt(req.params.id);
+  const indice = smsBancoBD.findIndex(function(s) { return s.id === id; });
+  if (indice === -1) {
+    return res.status(404).json({ status: 'error', message: 'Aviso no encontrado' });
+  }
+  smsBancoBD.splice(indice, 1);
+  guardarDatos();
   res.json({ status: 'success', id: id });
 });
 
@@ -1003,6 +1084,9 @@ app.get('/qr', function(req, res) {
   res.sendFile(path.join(__dirname, 'qr.html'));
 });
 
+// ==========================================
+// WEBHOOK DEL BANCO
+// ==========================================
 app.post('/webhook/sms-banco', function(req, res) {
   try {
     const tokenEsperado = process.env.WEBHOOK_TOKEN || '';
@@ -1052,6 +1136,7 @@ app.post('/webhook/sms-banco', function(req, res) {
 
     if (!notif.valido) {
       smsBancoBD.unshift(registro);
+      guardarDatos();
       return res.json({ status: 'info', message: notif.motivo, parseado: notif });
     }
 
@@ -1079,6 +1164,7 @@ app.post('/webhook/sms-banco', function(req, res) {
       registro.pagoId = pago.id;
       registro.conciliado = true;
       smsBancoBD.unshift(registro);
+      guardarDatos();
       console.log('[BANCO] Pago ' + pago.id + ' aprobado por ' + hallado.criterio);
 
       if (pago.remitenteJid && sockWhatsApp) {
@@ -1113,6 +1199,7 @@ app.post('/webhook/sms-banco', function(req, res) {
       textoOCR: 'Pago recibido segun notificacion BDV. Falta vincular con el cliente.'
     });
     smsBancoBD.unshift(registro);
+    guardarDatos();
     console.log('[BANCO] Pago del banco registrado sin comprobante. Ref: ' + notif.referencia);
 
     res.json({ status: 'success', conciliado: false, message: 'Pago del banco registrado. Vinculelo con el cliente.', referencia: notif.referencia, monto: notif.monto, pagador: notif.nombre, telefonoPagador: notif.telefono });
@@ -1122,9 +1209,23 @@ app.post('/webhook/sms-banco', function(req, res) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 });
+
 app.get('/api/probar-notificacion', function(req, res) {
-  const texto = req.query.texto || '';
-  res.json(parsearNotificacionBDV(texto));
+  try {
+    const texto = req.query.texto || '';
+    res.json(parsearNotificacionBDV(texto));
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/test-banco', function(req, res) {
+  try {
+    const texto = req.query.texto || '';
+    res.json({ ok: true, resultado: parsearNotificacionBDV(texto) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.get('/api/pagos', function(req, res) {
@@ -1152,6 +1253,7 @@ app.post('/webhook/whatsapp', function(req, res) {
     estado: 'pendiente',
     fecha: fecha || new Date().toLocaleDateString()
   });
+  guardarDatos();
   res.json({ status: 'success' });
 });
 
@@ -1159,9 +1261,20 @@ app.get('/', function(req, res) {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
+// ==========================================
+// INICIAR SERVIDOR
+// ==========================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', function() {
   console.log('Servidor corriendo en puerto ' + PORT);
   console.log('Sesion: ' + authDir);
   console.log('URL: ' + (process.env.RAILWAY_PUBLIC_DOMAIN || 'http://localhost:' + PORT));
+});
+
+process.on('SIGTERM', function() {
+  try {
+    fs.writeFileSync(archivoDatos, JSON.stringify({ pagos: pagosBD, sms: smsBancoBD }), 'utf8');
+    console.log('[DATOS] Guardado antes de apagar');
+  } catch (e) {}
+  process.exit(0);
 });
