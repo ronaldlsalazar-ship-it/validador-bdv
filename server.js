@@ -36,7 +36,7 @@ let estadoConexion = 'iniciando';
 let ultimoError = '';
 let intentosConexion = 0;
 const MAX_INTENTOS = 5;
-const OCR_TIMEOUT_MS = 90000;
+const OCR_TIMEOUT_MS = 180000;
 // ==========================================
 // PERSISTENCIA DE DATOS
 // ==========================================
@@ -204,9 +204,22 @@ return '';
 function normalizarMontoVE(str) {
 if (!str) return 0;
 let limpio = String(str).replace(/\s/g, '');
-if (limpio.indexOf(',') !== -1) {
+const tieneComa = limpio.indexOf(',') !== -1;
+const tienePunto = limpio.indexOf('.') !== -1;
+if (tieneComa && tienePunto) {
+if (limpio.lastIndexOf(',') > limpio.lastIndexOf('.')) {
 limpio = limpio.replace(/\./g, '').replace(',', '.');
 } else {
+limpio = limpio.replace(/,/g, '');
+}
+} else if (tieneComa) {
+const partes = limpio.split(',');
+if (partes.length === 2 && partes[1].length === 3 && partes[0].length <= 3) {
+limpio = partes.join('');
+} else {
+limpio = limpio.replace(',', '.');
+}
+} else if (tienePunto) {
 const partes = limpio.split('.');
 if (partes.length > 1 && partes[partes.length - 1].length === 2) {
 const dec = partes.pop();
@@ -224,35 +237,22 @@ return isNaN(num) ? 0 : num;
 function extraerMonto(texto) {
 if (!texto) return 0.00;
 const limpio = texto.replace(/\s+/g, ' ');
-// Patron 1: con etiqueta Bs (Bs. 264.174,66)
-const matchBs = limpio.match(/Bs\.?\s*(\d{1,3}(?:\.\d{3})*,\d{2})/i);
-if (matchBs) {
-const monto = normalizarMontoVE(matchBs[1]);
+const patrones = [
+/Bs\.?\s*(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/i,
+/(?:monto|total|importe|valor)[^\d]{0,15}(\d{1,3}(?:[.,\s]\d{3})*[.,]\d{2})/i,
+/\b(\d{1,3}(?:\.\d{3})+,\d{2})\b/,
+/\b(\d{1,3}(?:\s\d{3})+,\d{2})\b/,
+/\b(\d{1,3}(?:,\d{3})+\.\d{2})\b/,
+/\b(\d{1,3}(?:\.\d{3})+\.\d{2})\b/,
+/\b(\d{1,9},\d{2})\b/,
+/\b(\d{1,7}\.\d{2})\b/
+];
+for (const patron of patrones) {
+const match = limpio.match(patron);
+if (match && match[1]) {
+const monto = normalizarMontoVE(match[1]);
 if (monto > 0 && monto < 999999999) return monto;
 }
-// Patron 2: etiqueta Monto/Total seguida del numero
-const matchEtiqueta = limpio.match(/(?:monto|total|importe|valor|bol[ií]vares?)[^\d]{0,15}(\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,2})?)/i);
-if (matchEtiqueta) {
-const monto = normalizarMontoVE(matchEtiqueta[1]);
-if (monto > 0 && monto < 999999999) return monto;
-}
-// Patron 3: formato tabla BDV sin etiqueta (264.174,66)
-const matchTabla = limpio.match(/\b(\d{1,3}(?:\.\d{3})+,\d{2})\b/);
-if (matchTabla) {
-const monto = normalizarMontoVE(matchTabla[1]);
-if (monto > 0 && monto < 999999999) return monto;
-}
-// Patron 4: numero simple con coma decimal (150,00)
-const matchSimple = limpio.match(/\b(\d{1,9},\d{2})\b/);
-if (matchSimple) {
-const monto = normalizarMontoVE(matchSimple[1]);
-if (monto > 0 && monto < 999999999) return monto;
-}
-// Patron 5: formato con punto decimal (150.00)
-const matchPunto = limpio.match(/\b(\d{1,3}(?:,\d{3})+\.\d{2})\b/);
-if (matchPunto) {
-const monto = parseFloat(matchPunto[1].replace(/,/g, ''));
-if (!isNaN(monto) && monto > 0 && monto < 999999999) return monto;
 }
 return 0.00;
 }
@@ -479,20 +479,25 @@ return resultado;
 async function preprocesarImagen(rutaOriginal) {
 const marca = Date.now();
 const rutaNormal = path.join(uploadDir, 'ocr_normal_' + marca + '.png');
+const rutaSuave = path.join(uploadDir, 'ocr_suave_' + marca + '.png');
 const rutaInvertida = path.join(uploadDir, 'ocr_invertida_' + marca + '.png');
 try {
 await sharp(rutaOriginal)
-.resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: false })
-.grayscale().normalize().sharpen({ sigma: 1.5 }).threshold(128)
+.resize({ width: 2200, height: 2200, fit: 'inside', withoutEnlargement: false })
+.grayscale().normalize().sharpen({ sigma: 1.5 }).threshold(180)
 .png({ compressionLevel: 6 }).toFile(rutaNormal);
 await sharp(rutaOriginal)
-.resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: false })
-.negate().grayscale().normalize().sharpen({ sigma: 1.5 }).threshold(128)
+.resize({ width: 2200, height: 2200, fit: 'inside', withoutEnlargement: false })
+.grayscale().normalize().sharpen({ sigma: 1.2 })
+.png({ compressionLevel: 6 }).toFile(rutaSuave);
+await sharp(rutaOriginal)
+.resize({ width: 2200, height: 2200, fit: 'inside', withoutEnlargement: false })
+.negate().grayscale().normalize().sharpen({ sigma: 1.5 }).threshold(180)
 .png({ compressionLevel: 6 }).toFile(rutaInvertida);
-return { normal: rutaNormal, invertida: rutaInvertida };
+return { normal: rutaNormal, suave: rutaSuave, invertida: rutaInvertida };
 } catch (err) {
 console.error('Error en preprocesamiento: ' + err.message);
-return { normal: rutaOriginal, invertida: null };
+return { normal: rutaOriginal, suave: null, invertida: null };
 }
 }
 // ==========================================
@@ -509,19 +514,29 @@ await worker.setParameters({
 tessedit_pageseg_mode: '6',
 preserve_interword_spaces: '1'
 });
-const resultadoNormal = await conTimeout(worker.recognize(rutas.normal), 60000, 'lectura normal');
-const textoNormal = resultadoNormal.data.text || '';
-let textoInvertido = '';
-if (rutas.invertida && fs.existsSync(rutas.invertida)) {
+const textos = [];
+const r1 = await conTimeout(worker.recognize(rutas.suave || rutas.normal), 45000, 'lectura suave');
+const t1 = (r1.data && r1.data.text) || '';
+textos.push(t1);
+console.log('[OCR-SUAVE] ' + t1.substring(0, 800));
+const r2 = await conTimeout(worker.recognize(rutas.normal), 45000, 'lectura contraste');
+const t2 = (r2.data && r2.data.text) || '';
+textos.push(t2);
+console.log('[OCR-CONTRASTE] ' + t2.substring(0, 800));
+let combinado = textos.join('\n');
+if (extraerMonto(combinado) === 0 && rutas.invertida && fs.existsSync(rutas.invertida)) {
 try {
-const resultadoInvertido = await conTimeout(worker.recognize(rutas.invertida), 60000, 'lectura invertida');
-textoInvertido = resultadoInvertido.data.text || '';
+const r3 = await conTimeout(worker.recognize(rutas.invertida), 45000, 'lectura invertida');
+const t3 = (r3.data && r3.data.text) || '';
+textos.push(t3);
+console.log('[OCR-INVERTIDA] ' + t3.substring(0, 800));
 } catch (e) {
-console.error('[OCR] Fallo lectura invertida: ' + e.message);
+console.error('[OCR] Fallo invertida: ' + e.message);
 }
 }
-console.log('[OCR] Proceso completado. Caracteres: ' + (textoNormal.length + textoInvertido.length));
-return textoNormal + '\n' + textoInvertido;
+combinado = textos.join('\n');
+console.log('[OCR] Completado. Caracteres: ' + combinado.length + ' | Monto detectado: ' + extraerMonto(combinado));
+return combinado;
 } catch (error) {
 console.error('[OCR] ERROR: ' + error.message);
 return '';
@@ -530,12 +545,11 @@ if (worker) {
 try { await worker.terminate(); } catch (e) {}
 }
 if (rutas) {
-if (rutas.normal && rutas.normal !== rutaImagen && fs.existsSync(rutas.normal)) {
-try { fs.unlinkSync(rutas.normal); } catch (e) {}
+['normal', 'suave', 'invertida'].forEach(function(k) {
+if (rutas[k] && rutas[k] !== rutaImagen && fs.existsSync(rutas[k])) {
+try { fs.unlinkSync(rutas[k]); } catch (e) {}
 }
-if (rutas.invertida && fs.existsSync(rutas.invertida)) {
-try { fs.unlinkSync(rutas.invertida); } catch (e) {}
-}
+});
 }
 }
 }
