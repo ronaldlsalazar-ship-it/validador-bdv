@@ -850,7 +850,7 @@ try { fs.unlinkSync(rutaCompleta); } catch (e) {}
 console.log('[FILTRO] Imagen RECHAZADA y eliminada: ' + nombreArchivo);
 try {
 await sockWhatsApp.sendMessage(remitente, {
-text: 'Esta imagen NO es un comprobante de pago bancario.\n\nMotivo: ' + analisis.motivo + '\n\nSi necesita informacion adicional será atentido a la brevedad por un operador , pero si intentó reportar un pago y cree que hay un error, envie los datos escribiendo:\nRef: 12345678 Monto: Bs. 123,00'
+text: 'Esta imagen NO es un comprobante de pago bancario.\n\nMotivo: ' + analisis.motivo + '\n\nSolo aceptamos capturas de:\n- Pago Movil\n- Transferencia bancaria\n- Deposito\n\nSi crees que es un error, envia los datos por texto:\nRef: 12345678 Monto: Bs. 123,00'
 });
 } catch (e) {}
 return;
