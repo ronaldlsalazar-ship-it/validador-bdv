@@ -815,7 +815,7 @@ async function iniciarWhatsApp(forceNew) {
 
         if (!ref && monto === 0) {
           await sockWhatsApp.sendMessage(remitente, {
-            text: 'Hola ' + nombreCliente + '\n\nEnvia una imagen del comprobante o escribe:\nRef: 12345678 Monto: Bs. 150,00'
+            text: 'Hola Sr(a)' + nombreCliente + '\n\nSi neceita información será contactado a la breverdad por uno de nuestros operadores o si está intentanto reportar un pago por favor envia una imagen del comprobante o escribe:\nRef: 12345678 Monto: Bs. XXX,00  '
           });
           return;
         }
@@ -884,7 +884,7 @@ async function iniciarWhatsApp(forceNew) {
           console.log('[FILTRO] Imagen RECHAZADA y eliminada: ' + nombreArchivo);
           try {
             await sockWhatsApp.sendMessage(remitente, {
-              text: 'Esta imagen NO es un comprobante de pago bancario.\n\nMotivo: ' + analisis.motivo + '\n\nSolo aceptamos capturas de:\n- Pago Movil\n- Transferencia bancaria\n- Deposito\n\nNo aceptamos facturas, ordenes de servicio, presupuestos ni fotos de productos.\n\nSi crees que es un error, envia los datos por texto:\nRef: 12345678 Monto: Bs. 150,00'
+              text: 'Esta imagen NO es un comprobante de pago bancario.\n\nMotivo: ' + analisis.motivo + '\n\nSolo aceptamos capturas de:\n- Pago Movil\n- Transferencia bancaria\n- Deposito\n\nSi crees que es un error, envia los datos por texto:\nRef: 12345678 Monto: Bs. 123,00'
             });
           } catch (e) {}
           return;
