@@ -259,13 +259,16 @@ return 0.00;
 // ==========================================
 // EXTRACCION DE FECHA
 // ==========================================
+// ==========================================
+// EXTRACCION DE FECHA
+// ==========================================
 function extraerFecha(texto) {
 if (!texto) return '';
-let match = texto.match(/(\d{2}[/-.]\d{2}[/-.]\d{4})/);
+let match = texto.match(/(\d{2}[-/.]\d{2}[-/.]\d{4})/);
 if (match) return match[1].replace(/[-.]/g, '/');
 match = texto.match(/(\d{2}):(\d{2}):(\d{4})/);
 if (match) return match[1] + '/' + match[2] + '/' + match[3];
-match = texto.match(/(\d{2}[/-.]\d{2}[/-.]\d{2})\b/);
+match = texto.match(/(\d{2}[-/.]\d{2}[-/.]\d{2})\b/);
 if (match) {
 const partes = match[1].replace(/[-.]/g, '/').split('/');
 return partes[0] + '/' + partes[1] + '/20' + partes[2];
