@@ -793,6 +793,8 @@ async function iniciarWhatsApp(forceNew) {
           pagoExistente.remitenteJid = remitente;
           pagoExistente.fechaEdicion = new Date().toLocaleString();
           pagoExistente.sinComprobante = false;
+          const idxDup = pagosBD.indexOf(pagoExistente);
+          if (idxDup > 0) { pagosBD.splice(idxDup, 1); pagosBD.unshift(pagoExistente); }
           if (monto > 0) pagoExistente.monto = monto;
           if (bancoDetectado && bancoDetectado !== 'Por confirmar') pagoExistente.banco = bancoDetectado;
           if (fechaComprobante) pagoExistente.fecha = fechaComprobante;
@@ -884,6 +886,8 @@ async function iniciarWhatsApp(forceNew) {
           pagoExistente.textoOCR = (textoOCR || 'OCR sin resultado').substring(0, 600);
           pagoExistente.fechaEdicion = new Date().toLocaleString();
           pagoExistente.sinComprobante = false;
+         const idxDup = pagosBD.indexOf(pagoExistente);
+         if (idxDup > 0) { pagosBD.splice(idxDup, 1); pagosBD.unshift(pagoExistente); }
           if (monto > 0) pagoExistente.monto = monto;
           if (bancoDetectado && bancoDetectado !== 'Por confirmar') pagoExistente.banco = bancoDetectado;
           if (fechaComprobante) pagoExistente.fecha = fechaComprobante;
