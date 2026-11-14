@@ -935,7 +935,11 @@ async function iniciarWhatsApp(forceNew) {
     setTimeout(function() { iniciarWhatsApp(false); }, 8000);
   }
 }
+<<<<<<< HEAD
 iniciarWhatsApp(process.env.FORCE_NEW_SESSION === 'true');
+=======
+iniciarWhatsApp();
+>>>>>>> 23e368f9946600276f0fc0f1cf3d7d5d27332f48
 
 // ==========================================
 // ENDPOINTS
